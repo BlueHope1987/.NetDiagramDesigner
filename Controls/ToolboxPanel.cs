@@ -61,8 +61,9 @@ namespace CloudNativeDesigner.Controls
 
         /// <summary>
         /// 设计模式。false 时禁用工具箱编辑相关功能。
+        /// 注意：使用 new 关键字显式隐藏 Component.DesignMode。
         /// </summary>
-        public bool DesignMode
+        public new bool DesignMode
         {
             get { return _designMode; }
             set { _designMode = value; }

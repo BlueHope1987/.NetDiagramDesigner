@@ -46,6 +46,7 @@ namespace CloudNativeDesigner.Controls
             _listTools.MultiColumn = false;
             _listTools.BorderStyle = BorderStyle.FixedSingle;
             _listTools.DoubleClick += new EventHandler(OnListDoubleClick);
+            _listTools.SelectedIndexChanged += new EventHandler(OnListSelectedIndexChanged);
             this.Controls.Add(_listTools);
 
             _btnUp = new Button();
@@ -84,7 +85,7 @@ namespace CloudNativeDesigner.Controls
             this.Controls.Add(_btnDelete);
 
             Label lblHint = new Label();
-            lblHint.Text = "提示：\n· 勾选 = 启用\n· 双击自定义项可编辑\n· 内置工具不可删除";
+            lblHint.Text = "提示：\n· 勾选 = 启用\n· 双击自定义项可编辑\n· 仅自定义工具可编辑删除";
             lblHint.Location = new Point(340, 196);
             lblHint.Size = new Size(110, 80);
             lblHint.ForeColor = Color.FromArgb(100, 100, 100);
@@ -105,6 +106,10 @@ namespace CloudNativeDesigner.Controls
             this.Controls.Add(_btnCancel);
 
             PopulateList();
+
+            // 初始状态下无选中项，编辑/删除按钮禁用
+            _btnEdit.Enabled = false;
+            _btnDelete.Enabled = false;
         }
 
         private void OnShown(object sender, EventArgs e)
@@ -148,7 +153,7 @@ namespace CloudNativeDesigner.Controls
             // 填充列表
             foreach (ToolboxItem item in _workingItems)
             {
-                string prefix = (item.Category == "自定义") ? "[自定义] " : "";
+                string prefix = "[" + item.Category + "] ";
                 string display = prefix + item.Name;
                 _listTools.Items.Add(display, item.Visible);
             }
@@ -159,6 +164,18 @@ namespace CloudNativeDesigner.Controls
             if (index < 0 || index >= _workingItems.Count)
                 return false;
             return _workingItems[index].Category == "自定义";
+        }
+
+        /// <summary>
+        /// 根据当前选中项更新编辑/删除按钮的可用状态：
+        /// 仅自定义工具可编辑和删除。
+        /// </summary>
+        private void OnListSelectedIndexChanged(object sender, EventArgs e)
+        {
+            int idx = _listTools.SelectedIndex;
+            bool isCustom = IsCustomItem(idx);
+            _btnEdit.Enabled = isCustom;
+            _btnDelete.Enabled = isCustom;
         }
 
         private void OnListDoubleClick(object sender, EventArgs e)
@@ -220,6 +237,7 @@ namespace CloudNativeDesigner.Controls
                     _workingItems.Add(item);
                     _listTools.Items.Add("[自定义] " + st.Name, true);
                     _listTools.SelectedIndex = _listTools.Items.Count - 1;
+                    OnListSelectedIndexChanged(null, null);
                 }
             }
         }
@@ -273,6 +291,7 @@ namespace CloudNativeDesigner.Controls
                 ShapeTypeRegistry.Instance.Unregister(item.Name);
                 _workingItems.RemoveAt(idx);
                 _listTools.Items.RemoveAt(idx);
+                OnListSelectedIndexChanged(null, null);
             }
         }
 

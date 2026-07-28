@@ -104,9 +104,23 @@ namespace CloudNativeDesigner.Shapes
             ShapeType type = ShapeTypeRegistry.Instance.GetShapeType(_shapeTypeName);
             ShapeColors colors = ComputeGradientColors();
 
-            if (type != null)
+            // 优先使用当前状态的自定义绘制指令
+            List<RenderCommand> commands = null;
+            ShapeState currentState = GetCurrentState();
+            if (currentState != null && currentState.UseCustomRenderCommands
+                && currentState.CustomRenderCommands != null
+                && currentState.CustomRenderCommands.Count > 0)
             {
-                foreach (RenderCommand cmd in type.RenderCommands)
+                commands = currentState.CustomRenderCommands;
+            }
+            else if (type != null)
+            {
+                commands = type.RenderCommands;
+            }
+
+            if (commands != null && commands.Count > 0)
+            {
+                foreach (RenderCommand cmd in commands)
                 {
                     cmd.Execute(g, Bounds, colors, scale);
                 }
@@ -326,6 +340,35 @@ namespace CloudNativeDesigner.Shapes
                 cs.TextColor = new XmlColor(s.TextColor.ToColor());
                 cs.HeaderColor = new XmlColor(s.HeaderColor.ToColor());
                 cs.Priority = s.Priority;
+                cs.UseCustomRenderCommands = s.UseCustomRenderCommands;
+                if (s.CustomRenderCommands != null)
+                {
+                    foreach (RenderCommand rc in s.CustomRenderCommands)
+                    {
+                        RenderCommand rcCopy = new RenderCommand();
+                        rcCopy.CommandType = rc.CommandType;
+                        rcCopy.X = rc.X; rcCopy.Y = rc.Y;
+                        rcCopy.Width = rc.Width; rcCopy.Height = rc.Height;
+                        rcCopy.CornerRadius = rc.CornerRadius;
+                        rcCopy.FillColor = new XmlColor(rc.FillColor.ToColor());
+                        rcCopy.StrokeColor = new XmlColor(rc.StrokeColor.ToColor());
+                        rcCopy.StrokeWidth = rc.StrokeWidth;
+                        rcCopy.Text = rc.Text;
+                        rcCopy.TextAlign = rc.TextAlign;
+                        rcCopy.FontSize = rc.FontSize;
+                        rcCopy.IsBold = rc.IsBold;
+                        if (rc.PolygonPoints != null)
+                        {
+                            rcCopy.PolygonPoints = new PointF[rc.PolygonPoints.Length];
+                            for (int i = 0; i < rc.PolygonPoints.Length; i++)
+                                rcCopy.PolygonPoints[i] = rc.PolygonPoints[i];
+                        }
+                        rcCopy.UseShapeColors = rc.UseShapeColors;
+                        rcCopy.Fill = rc.Fill;
+                        rcCopy.Stroke = rc.Stroke;
+                        cs.CustomRenderCommands.Add(rcCopy);
+                    }
+                }
                 clone.States.Add(cs);
             }
 

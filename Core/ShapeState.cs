@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 
 namespace CloudNativeDesigner.Core
@@ -12,6 +13,8 @@ namespace CloudNativeDesigner.Core
         private XmlColor _textColor = new XmlColor(Color.FromArgb(40, 40, 40));
         private XmlColor _headerColor = new XmlColor(Color.FromArgb(80, 130, 180));
         private int _priority = 0;
+        private List<RenderCommand> _customRenderCommands = new List<RenderCommand>();
+        private bool _useCustomRenderCommands = false;
 
         public string Name
         {
@@ -47,6 +50,25 @@ namespace CloudNativeDesigner.Core
         {
             get { return _priority; }
             set { _priority = value; }
+        }
+
+        /// <summary>
+        /// 该状态的自定义绘制指令。若 UseCustomRenderCommands 为 true，
+        /// 则图形实例在切换到该状态时使用此指令集而非 ShapeType 的默认指令。
+        /// </summary>
+        public List<RenderCommand> CustomRenderCommands
+        {
+            get { return _customRenderCommands; }
+            set { _customRenderCommands = value; }
+        }
+
+        /// <summary>
+        /// 是否使用该状态的自定义绘制指令。
+        /// </summary>
+        public bool UseCustomRenderCommands
+        {
+            get { return _useCustomRenderCommands; }
+            set { _useCustomRenderCommands = value; }
         }
 
         public ShapeState() { }
