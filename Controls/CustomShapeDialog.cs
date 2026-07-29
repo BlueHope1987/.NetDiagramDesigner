@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
-using System.Drawing.Drawing2D;
 using System.Windows.Forms;
 using CloudNativeDesigner.Core;
 
@@ -9,7 +8,8 @@ namespace CloudNativeDesigner.Controls
 {
     /// <summary>
     /// 自定义图形构建器（带状态和行为编辑）。
-    /// 支持多边形顶点编辑、状态定义、右键菜单行为定义。
+    /// 默认图形作为初始状态（"默认"状态），不再有独立图形标签页。
+    /// 状态标签页管理所有状态（含初始状态），行为标签页管理右键菜单操作。
     /// </summary>
     public class CustomShapeDialog : Form
     {
@@ -19,27 +19,13 @@ namespace CloudNativeDesigner.Controls
         private Button _btnOk;
         private Button _btnCancel;
 
-        // === 图形标签页 ===
-        private Panel _canvasPanel;
-        private Button _btnAddVertex;
-        private Button _btnDeleteVertex;
-        private Button _btnClosePath;
-        private CheckBox _chkFilled;
-        private ColorDialog _colorDialog;
-
-        private List<PointF> _vertices = new List<PointF>();
-        private int _dragIndex = -1;
-        private int _selectedVertex = -1;
-        private bool _closedPath = false;
-        private bool _filled = true;
-        private Color _fillColor = Color.FromArgb(220, 240, 255);
-        private Color _borderColor = Color.FromArgb(80, 120, 180);
-
         // === 状态标签页 ===
         private ListBox _listStates;
         private Button _btnAddState;
         private Button _btnEditState;
         private Button _btnDeleteState;
+        private Button _btnCopyState;
+        private Button _btnSetAsDefault;
         private List<ShapeState> _states = new List<ShapeState>();
 
         // === 行为标签页 ===
@@ -52,6 +38,9 @@ namespace CloudNativeDesigner.Controls
         private ShapeType _resultShapeType = null;
         public ShapeType ResultShapeType { get { return _resultShapeType; } }
 
+        /// <summary>初始状态（默认图形）的状态名标识</summary>
+        private const string DefaultStateName = "默认";
+
         /// <summary>创建新自定义图形</summary>
         public CustomShapeDialog() : this(null) { }
 
@@ -63,8 +52,6 @@ namespace CloudNativeDesigner.Controls
             this.FormBorderStyle = FormBorderStyle.SizableToolWindow;
             this.MaximizeBox = false;
             this.ClientSize = new Size(540, 500);
-
-            _colorDialog = new ColorDialog();
 
             // 名称（位于标签页上方）
             Label lblName = new Label();
@@ -85,7 +72,6 @@ namespace CloudNativeDesigner.Controls
             _tabControl.Size = new Size(510, 410);
             this.Controls.Add(_tabControl);
 
-            BuildGeometryTab();
             BuildStateTab();
             BuildActionTab();
 
@@ -111,104 +97,43 @@ namespace CloudNativeDesigner.Controls
             }
             else
             {
-                // 预置默认三角形
-                _vertices.Add(new PointF(100, 40));
-                _vertices.Add(new PointF(40, 250));
-                _vertices.Add(new PointF(260, 250));
-                _closedPath = true;
+                // 新建时预置一个默认初始状态（含默认三角形图形）
+                ShapeState defaultState = new ShapeState();
+                defaultState.Name = DefaultStateName;
+                defaultState.UseCustomRenderCommands = true;
+                defaultState.CustomRenderCommands = BuildDefaultTriangleCommands();
+                _states.Add(defaultState);
+                RefreshStateList();
             }
 
             // 初始化按钮可用状态
-            UpdateVertexButtons();
             UpdateStateButtons();
             UpdateActionButtons();
         }
 
-        #region 标签页构建
-
-        private void BuildGeometryTab()
+        /// <summary>
+        /// 构建默认三角形 RenderCommand 列表（作为初始状态的默认图形）
+        /// </summary>
+        private List<RenderCommand> BuildDefaultTriangleCommands()
         {
-            TabPage page = new TabPage("图形");
-            page.BorderStyle = BorderStyle.None;
-
-            // 画布区域
-            _canvasPanel = new Panel();
-            _canvasPanel.Location = new Point(10, 10);
-            _canvasPanel.Size = new Size(350, 340);
-            _canvasPanel.BackColor = Color.White;
-            _canvasPanel.BorderStyle = BorderStyle.FixedSingle;
-            _canvasPanel.Paint += new PaintEventHandler(OnCanvasPaint);
-            _canvasPanel.MouseDown += new MouseEventHandler(OnCanvasMouseDown);
-            _canvasPanel.MouseMove += new MouseEventHandler(OnCanvasMouseMove);
-            _canvasPanel.MouseUp += new MouseEventHandler(OnCanvasMouseUp);
-            _canvasPanel.DoubleClick += new EventHandler(OnCanvasDoubleClick);
-            page.Controls.Add(_canvasPanel);
-
-            // 右侧按钮
-            int x = 375;
-            int y = 10;
-
-            _btnAddVertex = new Button();
-            _btnAddVertex.Text = "添加顶点";
-            _btnAddVertex.Location = new Point(x, y);
-            _btnAddVertex.Size = new Size(120, 30);
-            _btnAddVertex.Click += new EventHandler(OnAddVertex);
-            page.Controls.Add(_btnAddVertex);
-            y += 36;
-
-            _btnDeleteVertex = new Button();
-            _btnDeleteVertex.Text = "删除顶点";
-            _btnDeleteVertex.Location = new Point(x, y);
-            _btnDeleteVertex.Size = new Size(120, 30);
-            _btnDeleteVertex.Click += new EventHandler(OnDeleteVertex);
-            page.Controls.Add(_btnDeleteVertex);
-            y += 36;
-
-            _btnClosePath = new Button();
-            _btnClosePath.Text = "闭合路径";
-            _btnClosePath.Location = new Point(x, y);
-            _btnClosePath.Size = new Size(120, 30);
-            _btnClosePath.Click += new EventHandler(OnToggleClosePath);
-            page.Controls.Add(_btnClosePath);
-            y += 40;
-
-            _chkFilled = new CheckBox();
-            _chkFilled.Text = "填充";
-            _chkFilled.Checked = true;
-            _chkFilled.Location = new Point(x, y);
-            _chkFilled.Size = new Size(120, 24);
-            _chkFilled.CheckedChanged += new EventHandler(OnFilledChanged);
-            page.Controls.Add(_chkFilled);
-            y += 30;
-
-            Button btnFillColor = new Button();
-            btnFillColor.Text = "填充颜色...";
-            btnFillColor.Location = new Point(x, y);
-            btnFillColor.Size = new Size(120, 28);
-            btnFillColor.Click += new EventHandler(OnPickFillColor);
-            page.Controls.Add(btnFillColor);
-            y += 34;
-
-            Button btnBorderColor = new Button();
-            btnBorderColor.Text = "边框颜色...";
-            btnBorderColor.Location = new Point(x, y);
-            btnBorderColor.Size = new Size(120, 28);
-            btnBorderColor.Click += new EventHandler(OnPickBorderColor);
-            page.Controls.Add(btnBorderColor);
-            y += 44;
-
-            Label lblHint = new Label();
-            lblHint.Text = "操作提示：\n· 单击画布添加顶点\n· 拖动顶点调整位置\n· 双击顶点删除\n· 至少需要3个顶点";
-            lblHint.Location = new Point(x, y);
-            lblHint.Size = new Size(125, 90);
-            lblHint.ForeColor = Color.FromArgb(100, 100, 100);
-            page.Controls.Add(lblHint);
-
-            _tabControl.TabPages.Add(page);
+            RenderCommand polyCmd = new RenderCommand();
+            polyCmd.CommandType = RenderCommandType.Polygon;
+            polyCmd.PolygonPoints = new PointF[]
+            {
+                new PointF(0.5f, 0f),
+                new PointF(0f, 1f),
+                new PointF(1f, 1f)
+            };
+            polyCmd.X = 0; polyCmd.Y = 0;
+            polyCmd.Width = 1; polyCmd.Height = 1;
+            polyCmd.FillColor = Color.FromArgb(220, 240, 255);
+            polyCmd.StrokeColor = Color.FromArgb(80, 120, 180);
+            polyCmd.StrokeWidth = 2f;
+            polyCmd.Fill = true;
+            return new List<RenderCommand> { polyCmd };
         }
 
-        private Button _btnCopyState;
-        private Button _btnCopyDefaultToState;
+        #region 标签页构建
 
         private void BuildStateTab()
         {
@@ -252,12 +177,12 @@ namespace CloudNativeDesigner.Controls
             page.Controls.Add(_btnCopyState);
             y += 32;
 
-            _btnCopyDefaultToState = new Button();
-            _btnCopyDefaultToState.Text = "复制默认图形";
-            _btnCopyDefaultToState.Location = new Point(x, y);
-            _btnCopyDefaultToState.Size = new Size(110, 28);
-            _btnCopyDefaultToState.Click += new EventHandler(OnCopyDefaultToState);
-            page.Controls.Add(_btnCopyDefaultToState);
+            _btnSetAsDefault = new Button();
+            _btnSetAsDefault.Text = "设为初始";
+            _btnSetAsDefault.Location = new Point(x, y);
+            _btnSetAsDefault.Size = new Size(110, 28);
+            _btnSetAsDefault.Click += new EventHandler(OnSetAsDefault);
+            page.Controls.Add(_btnSetAsDefault);
             y += 32;
 
             _btnDeleteState = new Button();
@@ -269,7 +194,7 @@ namespace CloudNativeDesigner.Controls
             y += 40;
 
             Label lblHint = new Label();
-            lblHint.Text = "提示：\n状态可拥有独立\n图形。勾选自定义\n图形后绘制专属\n多边形，或复制默\n认图形作为起点。";
+            lblHint.Text = "提示：\n初始状态即默认图形。\n可添加多个状态并\n为每个状态绘制不\n同图形，通过行为\n切换状态显示。";
             lblHint.Location = new Point(x, y);
             lblHint.Size = new Size(110, 110);
             lblHint.ForeColor = Color.FromArgb(100, 100, 100);
@@ -318,7 +243,7 @@ namespace CloudNativeDesigner.Controls
             y += 44;
 
             Label lblHint = new Label();
-            lblHint.Text = "提示：\n行为定义图形在右键\n菜单中可用的操作。\n类型：切换状态 / \n宿主回调。";
+            lblHint.Text = "提示：\n行为定义图形在右键\n菜单中可用的操作。\n类型：切换状态 / \n宿主回调。切换状态\n时可枚举选择已定义\n的目标状态。";
             lblHint.Location = new Point(x, y);
             lblHint.Size = new Size(110, 100);
             lblHint.ForeColor = Color.FromArgb(100, 100, 100);
@@ -332,93 +257,45 @@ namespace CloudNativeDesigner.Controls
         #region 数据加载
 
         /// <summary>
-        /// 从现有 ShapeType 解析多边形顶点、颜色、状态和行为
+        /// 从现有 ShapeType 解析状态和行为。
+        /// 默认图形（RenderCommands）转换为初始状态。
         /// </summary>
         private void LoadFromShapeType(ShapeType st)
         {
             _txtName.Text = st.Name;
 
-            // 解析顶点
-            if (st.RenderCommands != null && st.RenderCommands.Count > 0)
-            {
-                RenderCommand polyCmd = null;
-                foreach (RenderCommand cmd in st.RenderCommands)
-                {
-                    if (cmd.CommandType == RenderCommandType.Polygon)
-                    {
-                        polyCmd = cmd;
-                        break;
-                    }
-                }
+            // 将默认 RenderCommands 作为初始状态
+            List<RenderCommand> defaultCmds = CloneRenderCommands(st.RenderCommands);
 
-                if (polyCmd != null && polyCmd.PolygonPoints != null && polyCmd.PolygonPoints.Length >= 3)
-                {
-                    float canvasW = 300f;
-                    float canvasH = 300f;
-                    float offsetX = 25f;
-                    float offsetY = 20f;
+            bool hasStates = (st.DefaultStates != null && st.DefaultStates.Count > 0);
+            bool defaultStateExists = false;
 
-                    _vertices.Clear();
-                    foreach (PointF pt in polyCmd.PolygonPoints)
-                    {
-                        _vertices.Add(new PointF(offsetX + pt.X * canvasW, offsetY + pt.Y * canvasH));
-                    }
-                    _closedPath = true;
-                    _fillColor = polyCmd.FillColor;
-                    _borderColor = polyCmd.StrokeColor;
-                    _filled = polyCmd.Fill;
-                }
-            }
-
-            _chkFilled.Checked = _filled;
-
-            // 加载状态
-            if (st.DefaultStates != null)
+            if (hasStates)
             {
                 foreach (ShapeState state in st.DefaultStates)
                 {
-                    ShapeState copy = new ShapeState();
-                    copy.Name = state.Name;
-                    copy.FillColor = new XmlColor(state.FillColor.ToColor());
-                    copy.BorderColor = new XmlColor(state.BorderColor.ToColor());
-                    copy.TextColor = new XmlColor(state.TextColor.ToColor());
-                    copy.HeaderColor = new XmlColor(state.HeaderColor.ToColor());
-                    copy.Priority = state.Priority;
-                    copy.UseCustomRenderCommands = state.UseCustomRenderCommands;
-                    if (state.CustomRenderCommands != null)
-                    {
-                        foreach (RenderCommand rc in state.CustomRenderCommands)
-                        {
-                            RenderCommand rcCopy = new RenderCommand();
-                            rcCopy.CommandType = rc.CommandType;
-                            rcCopy.X = rc.X;
-                            rcCopy.Y = rc.Y;
-                            rcCopy.Width = rc.Width;
-                            rcCopy.Height = rc.Height;
-                            rcCopy.CornerRadius = rc.CornerRadius;
-                            rcCopy.FillColor = new XmlColor(rc.FillColor.ToColor());
-                            rcCopy.StrokeColor = new XmlColor(rc.StrokeColor.ToColor());
-                            rcCopy.StrokeWidth = rc.StrokeWidth;
-                            rcCopy.Text = rc.Text;
-                            rcCopy.TextAlign = rc.TextAlign;
-                            rcCopy.FontSize = rc.FontSize;
-                            rcCopy.IsBold = rc.IsBold;
-                            if (rc.PolygonPoints != null)
-                            {
-                                rcCopy.PolygonPoints = new PointF[rc.PolygonPoints.Length];
-                                for (int i = 0; i < rc.PolygonPoints.Length; i++)
-                                    rcCopy.PolygonPoints[i] = rc.PolygonPoints[i];
-                            }
-                            rcCopy.UseShapeColors = rc.UseShapeColors;
-                            rcCopy.Fill = rc.Fill;
-                            rcCopy.Stroke = rc.Stroke;
-                            copy.CustomRenderCommands.Add(rcCopy);
-                        }
-                    }
+                    ShapeState copy = CloneShapeState(state);
                     _states.Add(copy);
+                    if (copy.Name == DefaultStateName)
+                        defaultStateExists = true;
                 }
-                RefreshStateList();
             }
+
+            // 如果没有名为"默认"的初始状态，则用默认 RenderCommands 创建一个
+            if (!defaultStateExists)
+            {
+                ShapeState defaultState = new ShapeState();
+                defaultState.Name = DefaultStateName;
+                defaultState.UseCustomRenderCommands = true;
+                defaultState.CustomRenderCommands = (defaultCmds != null) ? defaultCmds : BuildDefaultTriangleCommands();
+                // 默认颜色
+                defaultState.FillColor = st.DefaultFillColor;
+                defaultState.BorderColor = st.DefaultBorderColor;
+                defaultState.TextColor = st.DefaultTextColor;
+                _states.Insert(0, defaultState);
+            }
+
+            RefreshStateList();
 
             // 加载行为
             if (st.CustomActions != null)
@@ -437,401 +314,29 @@ namespace CloudNativeDesigner.Controls
             }
         }
 
-        #endregion
-
-        #region 图形标签页事件
-
-        private void OnCanvasPaint(object sender, PaintEventArgs e)
+        /// <summary>深拷贝 ShapeState</summary>
+        private ShapeState CloneShapeState(ShapeState src)
         {
-            Graphics g = e.Graphics;
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.Clear(Color.White);
-
-            if (_vertices.Count == 0)
-                return;
-
-            GraphicsPath path = new GraphicsPath();
-            for (int i = 0; i < _vertices.Count; i++)
-            {
-                if (i == 0)
-                    path.StartFigure();
-                path.AddLine(_vertices[i], _vertices[(i + 1) % _vertices.Count]);
-            }
-            if (_closedPath)
-                path.CloseFigure();
-
-            if (_filled && _vertices.Count >= 3)
-            {
-                using (Brush brush = new SolidBrush(Color.FromArgb(180, _fillColor)))
-                {
-                    g.FillPath(brush, path);
-                }
-            }
-
-            using (Pen pen = new Pen(_borderColor, 2f))
-            {
-                for (int i = 0; i < _vertices.Count - 1; i++)
-                {
-                    g.DrawLine(pen, _vertices[i], _vertices[i + 1]);
-                }
-                if (_closedPath && _vertices.Count >= 3)
-                {
-                    g.DrawLine(pen, _vertices[_vertices.Count - 1], _vertices[0]);
-                }
-            }
-
-            for (int i = 0; i < _vertices.Count; i++)
-            {
-                RectangleF handle = new RectangleF(_vertices[i].X - 5, _vertices[i].Y - 5, 10, 10);
-                bool isSelected = (i == _selectedVertex);
-                using (Brush brush = new SolidBrush(isSelected ? Color.FromArgb(0, 120, 215) : Color.White))
-                using (Pen pen = new Pen(_borderColor, isSelected ? 2f : 1f))
-                {
-                    g.FillRectangle(brush, handle);
-                    g.DrawRectangle(pen, handle.X, handle.Y, handle.Width, handle.Height);
-                }
-            }
-        }
-
-        private void OnCanvasMouseDown(object sender, MouseEventArgs e)
-        {
-            if (e.Button == MouseButtons.Left)
-            {
-                int hitIdx = HitTestVertex(e.Location);
-                if (hitIdx >= 0)
-                {
-                    _selectedVertex = hitIdx;
-                    _dragIndex = hitIdx;
-                    _canvasPanel.Cursor = Cursors.SizeAll;
-                }
-                else
-                {
-                    _vertices.Add(new PointF(e.X, e.Y));
-                    _selectedVertex = _vertices.Count - 1;
-                    _canvasPanel.Invalidate();
-                }
-                UpdateVertexButtons();
-            }
-        }
-
-        private void OnCanvasMouseMove(object sender, MouseEventArgs e)
-        {
-            if (_dragIndex >= 0)
-            {
-                _vertices[_dragIndex] = new PointF(e.X, e.Y);
-                _canvasPanel.Invalidate();
-            }
-            else
-            {
-                int hitIdx = HitTestVertex(e.Location);
-                _canvasPanel.Cursor = hitIdx >= 0 ? Cursors.SizeAll : Cursors.Cross;
-            }
-        }
-
-        private void OnCanvasMouseUp(object sender, MouseEventArgs e)
-        {
-            if (_dragIndex >= 0)
-            {
-                _dragIndex = -1;
-                _canvasPanel.Cursor = Cursors.Default;
-            }
-        }
-
-        private void OnCanvasDoubleClick(object sender, EventArgs e)
-        {
-            MouseEventArgs me = (MouseEventArgs)e;
-            int hitIdx = HitTestVertex(me.Location);
-            if (hitIdx >= 0)
-            {
-                _vertices.RemoveAt(hitIdx);
-                if (_selectedVertex >= _vertices.Count)
-                    _selectedVertex = _vertices.Count - 1;
-                _canvasPanel.Invalidate();
-                UpdateVertexButtons();
-            }
-        }
-
-        private int HitTestVertex(Point pt)
-        {
-            for (int i = 0; i < _vertices.Count; i++)
-            {
-                float dx = _vertices[i].X - pt.X;
-                float dy = _vertices[i].Y - pt.Y;
-                if (dx * dx + dy * dy <= 64)
-                    return i;
-            }
-            return -1;
-        }
-
-        /// <summary>
-        /// 更新图形标签页中与顶点相关按钮的可用状态。
-        /// </summary>
-        private void UpdateVertexButtons()
-        {
-            bool hasVertexSelected = (_selectedVertex >= 0 && _selectedVertex < _vertices.Count);
-            _btnDeleteVertex.Enabled = hasVertexSelected;
-        }
-
-        private void OnAddVertex(object sender, EventArgs e)
-        {
-            PointF newPt;
-            if (_vertices.Count > 0)
-            {
-                PointF last = _vertices[_vertices.Count - 1];
-                newPt = new PointF(last.X + 30, last.Y + 30);
-            }
-            else
-            {
-                newPt = new PointF(175, 170);
-            }
-            _vertices.Add(newPt);
-            _selectedVertex = _vertices.Count - 1;
-            _canvasPanel.Invalidate();
-        }
-
-        private void OnDeleteVertex(object sender, EventArgs e)
-        {
-            if (_selectedVertex >= 0 && _selectedVertex < _vertices.Count)
-            {
-                _vertices.RemoveAt(_selectedVertex);
-                if (_selectedVertex >= _vertices.Count)
-                    _selectedVertex = _vertices.Count - 1;
-                _canvasPanel.Invalidate();
-                UpdateVertexButtons();
-            }
-        }
-
-        private void OnToggleClosePath(object sender, EventArgs e)
-        {
-            _closedPath = !_closedPath;
-            _btnClosePath.Text = _closedPath ? "打开路径" : "闭合路径";
-            _canvasPanel.Invalidate();
-        }
-
-        private void OnFilledChanged(object sender, EventArgs e)
-        {
-            _filled = _chkFilled.Checked;
-            _canvasPanel.Invalidate();
-        }
-
-        private void OnPickFillColor(object sender, EventArgs e)
-        {
-            _colorDialog.Color = _fillColor;
-            if (_colorDialog.ShowDialog() == DialogResult.OK)
-            {
-                _fillColor = _colorDialog.Color;
-                _canvasPanel.Invalidate();
-            }
-        }
-
-        private void OnPickBorderColor(object sender, EventArgs e)
-        {
-            _colorDialog.Color = _borderColor;
-            if (_colorDialog.ShowDialog() == DialogResult.OK)
-            {
-                _borderColor = _colorDialog.Color;
-                _canvasPanel.Invalidate();
-            }
-        }
-
-        #endregion
-
-        #region 状态标签页事件
-
-        private void RefreshStateList()
-        {
-            _listStates.Items.Clear();
-            foreach (ShapeState state in _states)
-            {
-                _listStates.Items.Add(state.Name);
-            }
-            UpdateStateButtons();
-        }
-
-        /// <summary>
-        /// 根据状态列表的选中项更新编辑/复制/删除按钮的可用状态。
-        /// </summary>
-        private void OnStateListSelectedIndexChanged(object sender, EventArgs e)
-        {
-            UpdateStateButtons();
-        }
-
-        private void UpdateStateButtons()
-        {
-            bool hasSelection = (_listStates.SelectedIndex >= 0 && _listStates.SelectedIndex < _states.Count);
-            _btnEditState.Enabled = hasSelection;
-            _btnCopyState.Enabled = hasSelection;
-            _btnCopyDefaultToState.Enabled = hasSelection;
-            _btnDeleteState.Enabled = hasSelection;
-        }
-
-        private void OnDrawStateItem(object sender, DrawItemEventArgs e)
-        {
-            if (e.Index < 0 || e.Index >= _states.Count)
-                return;
-
-            e.DrawBackground();
-            ShapeState state = _states[e.Index];
-
-            // 绘制颜色预览块
-            Rectangle colorRect = new Rectangle(e.Bounds.X + 4, e.Bounds.Y + 3, 20, e.Bounds.Height - 6);
-            using (Brush brush = new SolidBrush(state.FillColor.ToColor()))
-            using (Pen pen = new Pen(state.BorderColor.ToColor(), 1))
-            {
-                e.Graphics.FillRectangle(brush, colorRect);
-                e.Graphics.DrawRectangle(pen, colorRect);
-            }
-
-            // 绘制状态名
-            string display = state.Name;
-            if (state.UseCustomRenderCommands && state.CustomRenderCommands != null && state.CustomRenderCommands.Count > 0)
-                display += " [自定义图形]";
-            using (Brush textBrush = new SolidBrush(e.ForeColor))
-            {
-                e.Graphics.DrawString(display, e.Font, textBrush,
-                    e.Bounds.X + 30, e.Bounds.Y + 2);
-            }
-
-            e.DrawFocusRectangle();
-        }
-
-        /// <summary>
-        /// 根据当前"图形"标签页的顶点构建默认 RenderCommand 列表，用于传给状态编辑器。
-        /// </summary>
-        private List<RenderCommand> BuildDefaultRenderCommandsFromVertices()
-        {
-            if (_vertices.Count < 3)
-                return null;
-
-            float minX = float.MaxValue, minY = float.MaxValue;
-            float maxX = float.MinValue, maxY = float.MinValue;
-            foreach (PointF pt in _vertices)
-            {
-                if (pt.X < minX) minX = pt.X;
-                if (pt.Y < minY) minY = pt.Y;
-                if (pt.X > maxX) maxX = pt.X;
-                if (pt.Y > maxY) maxY = pt.Y;
-            }
-            float rangeX = maxX - minX;
-            float rangeY = maxY - minY;
-            if (rangeX < 1) rangeX = 1;
-            if (rangeY < 1) rangeY = 1;
-
-            List<PointF> normalized = new List<PointF>();
-            foreach (PointF pt in _vertices)
-            {
-                normalized.Add(new PointF((pt.X - minX) / rangeX, (pt.Y - minY) / rangeY));
-            }
-
-            RenderCommand polyCmd = new RenderCommand();
-            polyCmd.CommandType = RenderCommandType.Polygon;
-            polyCmd.PolygonPoints = normalized.ToArray();
-            polyCmd.X = 0; polyCmd.Y = 0;
-            polyCmd.Width = 1; polyCmd.Height = 1;
-            polyCmd.FillColor = _filled ? _fillColor : Color.Transparent;
-            polyCmd.StrokeColor = _borderColor;
-            polyCmd.StrokeWidth = 2f;
-            polyCmd.Fill = _filled;
-
-            return new List<RenderCommand> { polyCmd };
-        }
-
-        private void OnAddState(object sender, EventArgs e)
-        {
-            List<RenderCommand> defaults = BuildDefaultRenderCommandsFromVertices();
-            using (ShapeStateEditDialog dlg = new ShapeStateEditDialog(null, defaults))
-            {
-                if (dlg.ShowDialog() == DialogResult.OK && dlg.ResultState != null)
-                {
-                    _states.Add(dlg.ResultState);
-                    RefreshStateList();
-                    _listStates.SelectedIndex = _listStates.Items.Count - 1;
-                }
-            }
-        }
-
-        private void OnEditState(object sender, EventArgs e)
-        {
-            int idx = _listStates.SelectedIndex;
-            if (idx < 0 || idx >= _states.Count)
-                return;
-
-            List<RenderCommand> defaults = BuildDefaultRenderCommandsFromVertices();
-            using (ShapeStateEditDialog dlg = new ShapeStateEditDialog(_states[idx], defaults))
-            {
-                if (dlg.ShowDialog() == DialogResult.OK && dlg.ResultState != null)
-                {
-                    _states[idx] = dlg.ResultState;
-                    RefreshStateList();
-                }
-            }
-        }
-
-        private void OnCopyState(object sender, EventArgs e)
-        {
-            int idx = _listStates.SelectedIndex;
-            if (idx < 0 || idx >= _states.Count)
-                return;
-
-            ShapeState source = _states[idx];
             ShapeState copy = new ShapeState();
-            copy.Name = source.Name + "_副本";
-            copy.FillColor = new XmlColor(source.FillColor.ToColor());
-            copy.BorderColor = new XmlColor(source.BorderColor.ToColor());
-            copy.TextColor = new XmlColor(source.TextColor.ToColor());
-            copy.HeaderColor = new XmlColor(source.HeaderColor.ToColor());
-            copy.Priority = source.Priority;
-            copy.UseCustomRenderCommands = source.UseCustomRenderCommands;
-            if (source.CustomRenderCommands != null)
-            {
-                foreach (RenderCommand rc in source.CustomRenderCommands)
-                {
-                    RenderCommand rcCopy = new RenderCommand();
-                    rcCopy.CommandType = rc.CommandType;
-                    rcCopy.X = rc.X; rcCopy.Y = rc.Y;
-                    rcCopy.Width = rc.Width; rcCopy.Height = rc.Height;
-                    rcCopy.CornerRadius = rc.CornerRadius;
-                    rcCopy.FillColor = new XmlColor(rc.FillColor.ToColor());
-                    rcCopy.StrokeColor = new XmlColor(rc.StrokeColor.ToColor());
-                    rcCopy.StrokeWidth = rc.StrokeWidth;
-                    rcCopy.Text = rc.Text;
-                    rcCopy.TextAlign = rc.TextAlign;
-                    rcCopy.FontSize = rc.FontSize;
-                    rcCopy.IsBold = rc.IsBold;
-                    if (rc.PolygonPoints != null)
-                    {
-                        rcCopy.PolygonPoints = new PointF[rc.PolygonPoints.Length];
-                        for (int i = 0; i < rc.PolygonPoints.Length; i++)
-                            rcCopy.PolygonPoints[i] = rc.PolygonPoints[i];
-                    }
-                    rcCopy.UseShapeColors = rc.UseShapeColors;
-                    rcCopy.Fill = rc.Fill;
-                    rcCopy.Stroke = rc.Stroke;
-                    copy.CustomRenderCommands.Add(rcCopy);
-                }
-            }
-            _states.Add(copy);
-            RefreshStateList();
-            _listStates.SelectedIndex = _states.Count - 1;
+            copy.Name = src.Name;
+            copy.FillColor = new XmlColor(src.FillColor.ToColor());
+            copy.BorderColor = new XmlColor(src.BorderColor.ToColor());
+            copy.TextColor = new XmlColor(src.TextColor.ToColor());
+            copy.HeaderColor = new XmlColor(src.HeaderColor.ToColor());
+            copy.Priority = src.Priority;
+            copy.UseCustomRenderCommands = src.UseCustomRenderCommands;
+            copy.CustomRenderCommands = CloneRenderCommands(src.CustomRenderCommands);
+            return copy;
         }
 
-        private void OnCopyDefaultToState(object sender, EventArgs e)
+        /// <summary>深拷贝 RenderCommand 列表</summary>
+        private List<RenderCommand> CloneRenderCommands(List<RenderCommand> src)
         {
-            int idx = _listStates.SelectedIndex;
-            if (idx < 0 || idx >= _states.Count)
-                return;
+            if (src == null)
+                return new List<RenderCommand>();
 
-            List<RenderCommand> defaults = BuildDefaultRenderCommandsFromVertices();
-            if (defaults == null || defaults.Count == 0)
-            {
-                MessageBox.Show("当前默认图形顶点不足，无法复制。请在\u201c图形\u201d标签页绘制至少3个顶点。", "提示",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-
-            _states[idx].UseCustomRenderCommands = true;
-            _states[idx].CustomRenderCommands = new List<RenderCommand>();
-            foreach (RenderCommand rc in defaults)
+            List<RenderCommand> result = new List<RenderCommand>();
+            foreach (RenderCommand rc in src)
             {
                 RenderCommand rcCopy = new RenderCommand();
                 rcCopy.CommandType = rc.CommandType;
@@ -854,10 +359,187 @@ namespace CloudNativeDesigner.Controls
                 rcCopy.UseShapeColors = rc.UseShapeColors;
                 rcCopy.Fill = rc.Fill;
                 rcCopy.Stroke = rc.Stroke;
-                _states[idx].CustomRenderCommands.Add(rcCopy);
+                result.Add(rcCopy);
             }
-            MessageBox.Show(string.Format("已将默认图形复制到状态 \"{0}\"。", _states[idx].Name),
-                "完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return result;
+        }
+
+        /// <summary>
+        /// 获取初始（默认）状态的 RenderCommand 列表。
+        /// </summary>
+        private List<RenderCommand> GetDefaultRenderCommands()
+        {
+            foreach (ShapeState s in _states)
+            {
+                if (s.Name == DefaultStateName && s.UseCustomRenderCommands
+                    && s.CustomRenderCommands != null && s.CustomRenderCommands.Count > 0)
+                {
+                    return CloneRenderCommands(s.CustomRenderCommands);
+                }
+            }
+            // 回退：找第一个有自定义图形的状态
+            foreach (ShapeState s in _states)
+            {
+                if (s.UseCustomRenderCommands && s.CustomRenderCommands != null && s.CustomRenderCommands.Count > 0)
+                {
+                    return CloneRenderCommands(s.CustomRenderCommands);
+                }
+            }
+            return BuildDefaultTriangleCommands();
+        }
+
+        #endregion
+
+        #region 状态标签页事件
+
+        private void RefreshStateList()
+        {
+            int prevSel = _listStates.SelectedIndex;
+            _listStates.Items.Clear();
+            foreach (ShapeState state in _states)
+            {
+                _listStates.Items.Add(state.Name);
+            }
+            if (prevSel >= 0 && prevSel < _listStates.Items.Count)
+                _listStates.SelectedIndex = prevSel;
+            UpdateStateButtons();
+        }
+
+        private void OnStateListSelectedIndexChanged(object sender, EventArgs e)
+        {
+            UpdateStateButtons();
+        }
+
+        private void UpdateStateButtons()
+        {
+            bool hasSelection = (_listStates.SelectedIndex >= 0 && _listStates.SelectedIndex < _states.Count);
+            _btnEditState.Enabled = hasSelection;
+            _btnCopyState.Enabled = hasSelection;
+            _btnDeleteState.Enabled = hasSelection && _states.Count > 1;
+            _btnSetAsDefault.Enabled = hasSelection;
+        }
+
+        private void OnDrawStateItem(object sender, DrawItemEventArgs e)
+        {
+            if (e.Index < 0 || e.Index >= _states.Count)
+                return;
+
+            e.DrawBackground();
+            ShapeState state = _states[e.Index];
+
+            // 绘制颜色预览块
+            Rectangle colorRect = new Rectangle(e.Bounds.X + 4, e.Bounds.Y + 3, 20, e.Bounds.Height - 6);
+            using (Brush brush = new SolidBrush(state.FillColor.ToColor()))
+            using (Pen pen = new Pen(state.BorderColor.ToColor(), 1))
+            {
+                e.Graphics.FillRectangle(brush, colorRect);
+                e.Graphics.DrawRectangle(pen, colorRect);
+            }
+
+            // 绘制状态名
+            string display = state.Name;
+            if (state.Name == DefaultStateName)
+                display += " [初始]";
+            if (state.UseCustomRenderCommands && state.CustomRenderCommands != null && state.CustomRenderCommands.Count > 0)
+                display += " [自定义图形]";
+            using (Brush textBrush = new SolidBrush(e.ForeColor))
+            {
+                e.Graphics.DrawString(display, e.Font, textBrush,
+                    e.Bounds.X + 30, e.Bounds.Y + 2);
+            }
+
+            e.DrawFocusRectangle();
+        }
+
+        /// <summary>
+        /// 获取初始状态的图形，作为其他状态编辑时可复制的默认图形。
+        /// </summary>
+        private List<RenderCommand> GetDefaultCommandsForStateEditor()
+        {
+            return GetDefaultRenderCommands();
+        }
+
+        private void OnAddState(object sender, EventArgs e)
+        {
+            List<RenderCommand> defaults = GetDefaultCommandsForStateEditor();
+            using (ShapeStateEditDialog dlg = new ShapeStateEditDialog(null, defaults))
+            {
+                if (dlg.ShowDialog() == DialogResult.OK && dlg.ResultState != null)
+                {
+                    _states.Add(dlg.ResultState);
+                    RefreshStateList();
+                    _listStates.SelectedIndex = _listStates.Items.Count - 1;
+                }
+            }
+        }
+
+        private void OnEditState(object sender, EventArgs e)
+        {
+            int idx = _listStates.SelectedIndex;
+            if (idx < 0 || idx >= _states.Count)
+                return;
+
+            List<RenderCommand> defaults = GetDefaultCommandsForStateEditor();
+            using (ShapeStateEditDialog dlg = new ShapeStateEditDialog(_states[idx], defaults))
+            {
+                if (dlg.ShowDialog() == DialogResult.OK && dlg.ResultState != null)
+                {
+                    // 初始状态名不可更改
+                    if (_states[idx].Name == DefaultStateName)
+                        dlg.ResultState.Name = DefaultStateName;
+                    _states[idx] = dlg.ResultState;
+                    RefreshStateList();
+                }
+            }
+        }
+
+        private void OnCopyState(object sender, EventArgs e)
+        {
+            int idx = _listStates.SelectedIndex;
+            if (idx < 0 || idx >= _states.Count)
+                return;
+
+            ShapeState copy = CloneShapeState(_states[idx]);
+            copy.Name = _states[idx].Name + "_副本";
+            _states.Add(copy);
+            RefreshStateList();
+            _listStates.SelectedIndex = _states.Count - 1;
+        }
+
+        /// <summary>
+        /// 将选中的状态设为初始状态（交换名称和位置到第一位）。
+        /// </summary>
+        private void OnSetAsDefault(object sender, EventArgs e)
+        {
+            int idx = _listStates.SelectedIndex;
+            if (idx < 0 || idx >= _states.Count)
+                return;
+
+            if (_states[idx].Name == DefaultStateName)
+            {
+                MessageBox.Show("该状态已经是初始状态。", "提示",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // 找到当前初始状态，交换名称
+            for (int i = 0; i < _states.Count; i++)
+            {
+                if (_states[i].Name == DefaultStateName)
+                {
+                    _states[i].Name = _states[idx].Name;
+                    break;
+                }
+            }
+            _states[idx].Name = DefaultStateName;
+
+            // 将该状态移到第一位
+            ShapeState sel = _states[idx];
+            _states.RemoveAt(idx);
+            _states.Insert(0, sel);
+
+            RefreshStateList();
+            _listStates.SelectedIndex = 0;
         }
 
         private void OnDeleteState(object sender, EventArgs e)
@@ -865,6 +547,20 @@ namespace CloudNativeDesigner.Controls
             int idx = _listStates.SelectedIndex;
             if (idx < 0 || idx >= _states.Count)
                 return;
+
+            if (_states.Count <= 1)
+            {
+                MessageBox.Show("至少需要保留一个状态。", "提示",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (_states[idx].Name == DefaultStateName)
+            {
+                MessageBox.Show("初始状态不可删除，可先将其余状态设为初始后再删除。", "提示",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
 
             if (MessageBox.Show(string.Format("确定删除状态 \"{0}\"？", _states[idx].Name),
                 "确认删除", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
@@ -889,9 +585,6 @@ namespace CloudNativeDesigner.Controls
             UpdateActionButtons();
         }
 
-        /// <summary>
-        /// 根据行为列表的选中项更新编辑/删除按钮的可用状态。
-        /// </summary>
         private void OnActionListSelectedIndexChanged(object sender, EventArgs e)
         {
             UpdateActionButtons();
@@ -904,9 +597,20 @@ namespace CloudNativeDesigner.Controls
             _btnDeleteAction.Enabled = hasSelection;
         }
 
+        /// <summary>
+        /// 获取当前所有状态名称列表，供行为编辑器枚举选择。
+        /// </summary>
+        private List<string> GetStateNames()
+        {
+            List<string> names = new List<string>();
+            foreach (ShapeState s in _states)
+                names.Add(s.Name);
+            return names;
+        }
+
         private void OnAddAction(object sender, EventArgs e)
         {
-            using (ShapeActionEditDialog dlg = new ShapeActionEditDialog())
+            using (ShapeActionEditDialog dlg = new ShapeActionEditDialog(null, GetStateNames()))
             {
                 if (dlg.ShowDialog() == DialogResult.OK && dlg.ResultAction != null)
                 {
@@ -923,7 +627,7 @@ namespace CloudNativeDesigner.Controls
             if (idx < 0 || idx >= _actions.Count)
                 return;
 
-            using (ShapeActionEditDialog dlg = new ShapeActionEditDialog(_actions[idx]))
+            using (ShapeActionEditDialog dlg = new ShapeActionEditDialog(_actions[idx], GetStateNames()))
             {
                 if (dlg.ShowDialog() == DialogResult.OK && dlg.ResultAction != null)
                 {
@@ -956,9 +660,11 @@ namespace CloudNativeDesigner.Controls
             base.OnClosing(e);
             if (this.DialogResult == DialogResult.OK)
             {
-                if (_vertices.Count < 3)
+                // 验证初始状态存在且有图形
+                List<RenderCommand> defaultCmds = GetDefaultRenderCommands();
+                if (defaultCmds == null || defaultCmds.Count == 0)
                 {
-                    MessageBox.Show("自定义图形至少需要 3 个顶点", "提示",
+                    MessageBox.Show("初始状态至少需要 3 个顶点的图形。", "提示",
                         MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     e.Cancel = true;
                     return;
@@ -968,11 +674,11 @@ namespace CloudNativeDesigner.Controls
                 if (string.IsNullOrEmpty(name))
                     name = "CustomShape";
 
-                BuildShapeType(name);
+                BuildShapeType(name, defaultCmds);
             }
         }
 
-        private void BuildShapeType(string name)
+        private void BuildShapeType(string name, List<RenderCommand> defaultCmds)
         {
             ShapeType st = new ShapeType();
             st.Name = name;
@@ -980,91 +686,36 @@ namespace CloudNativeDesigner.Controls
             st.DefaultWidth = 120;
             st.DefaultHeight = 100;
 
-            // 归一化顶点
-            float minX = float.MaxValue, minY = float.MaxValue;
-            float maxX = float.MinValue, maxY = float.MinValue;
-            for (int i = 0; i < _vertices.Count; i++)
+            // 默认图形来自初始状态
+            st.RenderCommands = CloneRenderCommands(defaultCmds);
+
+            // 从默认图形中提取颜色
+            RenderCommand polyCmd = null;
+            foreach (RenderCommand cmd in defaultCmds)
             {
-                if (_vertices[i].X < minX) minX = _vertices[i].X;
-                if (_vertices[i].Y < minY) minY = _vertices[i].Y;
-                if (_vertices[i].X > maxX) maxX = _vertices[i].X;
-                if (_vertices[i].Y > maxY) maxY = _vertices[i].Y;
+                if (cmd.CommandType == RenderCommandType.Polygon)
+                {
+                    polyCmd = cmd;
+                    break;
+                }
             }
-            float rangeX = maxX - minX;
-            float rangeY = maxY - minY;
-            if (rangeX < 1) rangeX = 1;
-            if (rangeY < 1) rangeY = 1;
-
-            List<PointF> normalized = new List<PointF>();
-            for (int i = 0; i < _vertices.Count; i++)
+            if (polyCmd != null)
             {
-                float nx = (_vertices[i].X - minX) / rangeX;
-                float ny = (_vertices[i].Y - minY) / rangeY;
-                normalized.Add(new PointF(nx, ny));
+                st.DefaultFillColor = new XmlColor(polyCmd.FillColor);
+                st.DefaultBorderColor = new XmlColor(polyCmd.StrokeColor);
             }
-
-            // 构建 RenderCommand
-            List<RenderCommand> cmds = new List<RenderCommand>();
-            RenderCommand polyCmd = new RenderCommand();
-            polyCmd.CommandType = RenderCommandType.Polygon;
-            polyCmd.PolygonPoints = normalized.ToArray();
-            polyCmd.X = 0;
-            polyCmd.Y = 0;
-            polyCmd.Width = 1;
-            polyCmd.Height = 1;
-            polyCmd.FillColor = _filled ? _fillColor : Color.Transparent;
-            polyCmd.StrokeColor = _borderColor;
-            polyCmd.StrokeWidth = 2f;
-            polyCmd.Fill = _filled;
-            cmds.Add(polyCmd);
-            st.RenderCommands = cmds;
-
-            // 默认颜色
-            st.DefaultFillColor = new XmlColor(_filled ? _fillColor : Color.Transparent);
-            st.DefaultBorderColor = new XmlColor(_borderColor);
+            else
+            {
+                st.DefaultFillColor = new XmlColor(Color.FromArgb(220, 240, 255));
+                st.DefaultBorderColor = new XmlColor(Color.FromArgb(80, 120, 180));
+            }
             st.DefaultTextColor = new XmlColor(Color.FromArgb(40, 40, 40));
 
             // 状态
             st.DefaultStates = new List<ShapeState>();
             foreach (ShapeState s in _states)
             {
-                ShapeState copy = new ShapeState();
-                copy.Name = s.Name;
-                copy.FillColor = new XmlColor(s.FillColor.ToColor());
-                copy.BorderColor = new XmlColor(s.BorderColor.ToColor());
-                copy.TextColor = new XmlColor(s.TextColor.ToColor());
-                copy.HeaderColor = new XmlColor(s.HeaderColor.ToColor());
-                copy.Priority = s.Priority;
-                copy.UseCustomRenderCommands = s.UseCustomRenderCommands;
-                if (s.CustomRenderCommands != null)
-                {
-                    foreach (RenderCommand rc in s.CustomRenderCommands)
-                    {
-                        RenderCommand rcCopy = new RenderCommand();
-                        rcCopy.CommandType = rc.CommandType;
-                        rcCopy.X = rc.X; rcCopy.Y = rc.Y;
-                        rcCopy.Width = rc.Width; rcCopy.Height = rc.Height;
-                        rcCopy.CornerRadius = rc.CornerRadius;
-                        rcCopy.FillColor = new XmlColor(rc.FillColor.ToColor());
-                        rcCopy.StrokeColor = new XmlColor(rc.StrokeColor.ToColor());
-                        rcCopy.StrokeWidth = rc.StrokeWidth;
-                        rcCopy.Text = rc.Text;
-                        rcCopy.TextAlign = rc.TextAlign;
-                        rcCopy.FontSize = rc.FontSize;
-                        rcCopy.IsBold = rc.IsBold;
-                        if (rc.PolygonPoints != null)
-                        {
-                            rcCopy.PolygonPoints = new PointF[rc.PolygonPoints.Length];
-                            for (int i = 0; i < rc.PolygonPoints.Length; i++)
-                                rcCopy.PolygonPoints[i] = rc.PolygonPoints[i];
-                        }
-                        rcCopy.UseShapeColors = rc.UseShapeColors;
-                        rcCopy.Fill = rc.Fill;
-                        rcCopy.Stroke = rc.Stroke;
-                        copy.CustomRenderCommands.Add(rcCopy);
-                    }
-                }
-                st.DefaultStates.Add(copy);
+                st.DefaultStates.Add(CloneShapeState(s));
             }
 
             // 行为

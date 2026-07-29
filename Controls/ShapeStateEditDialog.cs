@@ -8,19 +8,17 @@ using CloudNativeDesigner.Core;
 namespace CloudNativeDesigner.Controls
 {
     /// <summary>
-    /// 图形状态编辑对话框。
-    /// 支持编辑状态属性（颜色、优先级）以及该状态专属的自定义多边形图形。
+    /// 图形状态编辑对话框（属性与图形合并为单页）。
+    /// 左侧编辑颜色/优先级等属性，右侧编辑该状态专属多边形图形。
     /// </summary>
     public class ShapeStateEditDialog : Form
     {
-        // 通用
-        private TabControl _tabControl;
         private Button _btnOk;
         private Button _btnCancel;
         private ColorDialog _colorDialog;
         private List<RenderCommand> _defaultCommands;
 
-        // === 属性标签页 ===
+        // === 属性区（左侧） ===
         private TextBox _txtName;
         private Button _btnFillColor;
         private Button _btnBorderColor;
@@ -32,13 +30,17 @@ namespace CloudNativeDesigner.Controls
         private Color _textColor;
         private Color _headerColor;
 
-        // === 图形标签页 ===
+        // === 图形区（右侧） ===
         private CheckBox _chkCustomGeom;
         private Panel _canvasPanel;
         private Button _btnAddVertex;
         private Button _btnDeleteVertex;
         private Button _btnClosePath;
+        private Button _btnCopyDefault;
+        private Button _btnClearGeom;
         private Label _lblDefaultHint;
+        private Button _btnGeomFillColor;
+        private Button _btnGeomBorderColor;
 
         private List<PointF> _vertices = new List<PointF>();
         private int _dragIndex = -1;
@@ -60,29 +62,23 @@ namespace CloudNativeDesigner.Controls
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
             this.MaximizeBox = false;
             this.MinimizeBox = false;
-            this.ClientSize = new Size(520, 450);
+            this.ClientSize = new Size(720, 420);
 
             _colorDialog = new ColorDialog();
 
-            _tabControl = new TabControl();
-            _tabControl.Location = new Point(10, 10);
-            _tabControl.Size = new Size(490, 370);
-            this.Controls.Add(_tabControl);
-
-            BuildPropertyTab(editState);
-            BuildGeometryTab(editState);
+            BuildLayout(editState);
 
             _btnOk = new Button();
             _btnOk.Text = "确定";
             _btnOk.DialogResult = DialogResult.OK;
-            _btnOk.Location = new Point(330, 400);
+            _btnOk.Location = new Point(540, 385);
             _btnOk.Size = new Size(80, 28);
             this.Controls.Add(_btnOk);
 
             _btnCancel = new Button();
             _btnCancel.Text = "取消";
             _btnCancel.DialogResult = DialogResult.Cancel;
-            _btnCancel.Location = new Point(420, 400);
+            _btnCancel.Location = new Point(630, 385);
             _btnCancel.Size = new Size(80, 28);
             this.Controls.Add(_btnCancel);
 
@@ -90,97 +86,99 @@ namespace CloudNativeDesigner.Controls
             this.CancelButton = _btnCancel;
         }
 
-        #region 属性标签页
+        #region 布局构建
 
-        private void BuildPropertyTab(ShapeState editState)
+        private void BuildLayout(ShapeState editState)
         {
-            TabPage page = new TabPage("属性");
-
+            // === 左侧属性区 ===
+            int leftX = 10;
+            int leftW = 200;
             int y = 12;
             int lblW = 70;
-            int xVal = 85;
+            int xVal = 80;
+
+            GroupBox grpProp = new GroupBox();
+            grpProp.Text = "属性";
+            grpProp.Location = new Point(leftX, 10);
+            grpProp.Size = new Size(leftW, 360);
+            this.Controls.Add(grpProp);
 
             Label lblName = new Label();
             lblName.Text = "名称：";
-            lblName.Location = new Point(10, y);
+            lblName.Location = new Point(8, y);
             lblName.Size = new Size(lblW, 20);
             lblName.TextAlign = System.Drawing.ContentAlignment.MiddleRight;
-            page.Controls.Add(lblName);
+            grpProp.Controls.Add(lblName);
 
             _txtName = new TextBox();
             _txtName.Location = new Point(xVal, y);
-            _txtName.Size = new Size(200, 22);
+            _txtName.Size = new Size(110, 22);
             _txtName.Text = (editState != null) ? editState.Name : "Normal";
-            page.Controls.Add(_txtName);
-            y += 36;
+            grpProp.Controls.Add(_txtName);
+            y += 34;
 
-            // 填充颜色
             Label lblFill = new Label();
             lblFill.Text = "填充颜色：";
-            lblFill.Location = new Point(10, y);
+            lblFill.Location = new Point(8, y);
             lblFill.Size = new Size(lblW, 24);
             lblFill.TextAlign = System.Drawing.ContentAlignment.MiddleRight;
-            page.Controls.Add(lblFill);
+            grpProp.Controls.Add(lblFill);
 
             _btnFillColor = new Button();
             _btnFillColor.Location = new Point(xVal, y);
             _btnFillColor.Size = new Size(80, 24);
             _btnFillColor.Click += new EventHandler(OnPickFillColor);
-            page.Controls.Add(_btnFillColor);
-            y += 34;
+            grpProp.Controls.Add(_btnFillColor);
+            y += 30;
 
-            // 边框颜色
             Label lblBorder = new Label();
             lblBorder.Text = "边框颜色：";
-            lblBorder.Location = new Point(10, y);
+            lblBorder.Location = new Point(8, y);
             lblBorder.Size = new Size(lblW, 24);
             lblBorder.TextAlign = System.Drawing.ContentAlignment.MiddleRight;
-            page.Controls.Add(lblBorder);
+            grpProp.Controls.Add(lblBorder);
 
             _btnBorderColor = new Button();
             _btnBorderColor.Location = new Point(xVal, y);
             _btnBorderColor.Size = new Size(80, 24);
             _btnBorderColor.Click += new EventHandler(OnPickBorderColor);
-            page.Controls.Add(_btnBorderColor);
-            y += 34;
+            grpProp.Controls.Add(_btnBorderColor);
+            y += 30;
 
-            // 文字颜色
             Label lblText = new Label();
             lblText.Text = "文字颜色：";
-            lblText.Location = new Point(10, y);
+            lblText.Location = new Point(8, y);
             lblText.Size = new Size(lblW, 24);
             lblText.TextAlign = System.Drawing.ContentAlignment.MiddleRight;
-            page.Controls.Add(lblText);
+            grpProp.Controls.Add(lblText);
 
             _btnTextColor = new Button();
             _btnTextColor.Location = new Point(xVal, y);
             _btnTextColor.Size = new Size(80, 24);
             _btnTextColor.Click += new EventHandler(OnPickTextColor);
-            page.Controls.Add(_btnTextColor);
-            y += 34;
+            grpProp.Controls.Add(_btnTextColor);
+            y += 30;
 
-            // 标题颜色
             Label lblHeader = new Label();
             lblHeader.Text = "标题颜色：";
-            lblHeader.Location = new Point(10, y);
+            lblHeader.Location = new Point(8, y);
             lblHeader.Size = new Size(lblW, 24);
             lblHeader.TextAlign = System.Drawing.ContentAlignment.MiddleRight;
-            page.Controls.Add(lblHeader);
+            grpProp.Controls.Add(lblHeader);
 
             _btnHeaderColor = new Button();
             _btnHeaderColor.Location = new Point(xVal, y);
             _btnHeaderColor.Size = new Size(80, 24);
             _btnHeaderColor.Click += new EventHandler(OnPickHeaderColor);
-            page.Controls.Add(_btnHeaderColor);
-            y += 34;
+            grpProp.Controls.Add(_btnHeaderColor);
+            y += 30;
 
-            // 优先级
             Label lblPriority = new Label();
             lblPriority.Text = "优先级：";
-            lblPriority.Location = new Point(10, y);
+            lblPriority.Location = new Point(8, y);
             lblPriority.Size = new Size(lblW, 22);
             lblPriority.TextAlign = System.Drawing.ContentAlignment.MiddleRight;
-            page.Controls.Add(lblPriority);
+            grpProp.Controls.Add(lblPriority);
 
             _numPriority = new NumericUpDown();
             _numPriority.Location = new Point(xVal, y);
@@ -188,7 +186,7 @@ namespace CloudNativeDesigner.Controls
             _numPriority.Minimum = 0;
             _numPriority.Maximum = 100;
             _numPriority.Value = (editState != null) ? editState.Priority : 0;
-            page.Controls.Add(_numPriority);
+            grpProp.Controls.Add(_numPriority);
 
             // 初始化颜色
             if (editState != null)
@@ -207,28 +205,27 @@ namespace CloudNativeDesigner.Controls
             }
             UpdateColorButtons();
 
-            _tabControl.TabPages.Add(page);
-        }
+            // === 右侧图形区 ===
+            int rightX = 220;
+            int rightW = 490;
 
-        #endregion
-
-        #region 图形标签页
-
-        private void BuildGeometryTab(ShapeState editState)
-        {
-            TabPage page = new TabPage("图形");
+            GroupBox grpGeom = new GroupBox();
+            grpGeom.Text = "图形";
+            grpGeom.Location = new Point(rightX, 10);
+            grpGeom.Size = new Size(rightW, 360);
+            this.Controls.Add(grpGeom);
 
             _chkCustomGeom = new CheckBox();
-            _chkCustomGeom.Text = "使用自定义图形（不勾选则使用默认图形）";
-            _chkCustomGeom.Location = new Point(10, 10);
-            _chkCustomGeom.Size = new Size(400, 22);
+            _chkCustomGeom.Text = "使用自定义图形（不勾选则使用默认/初始图形）";
+            _chkCustomGeom.Location = new Point(8, 18);
+            _chkCustomGeom.Size = new Size(300, 20);
             _chkCustomGeom.CheckedChanged += new EventHandler(OnCustomGeomChanged);
-            page.Controls.Add(_chkCustomGeom);
+            grpGeom.Controls.Add(_chkCustomGeom);
 
             // 画布
             _canvasPanel = new Panel();
-            _canvasPanel.Location = new Point(10, 38);
-            _canvasPanel.Size = new Size(300, 280);
+            _canvasPanel.Location = new Point(8, 42);
+            _canvasPanel.Size = new Size(300, 300);
             _canvasPanel.BackColor = Color.White;
             _canvasPanel.BorderStyle = BorderStyle.FixedSingle;
             _canvasPanel.Paint += new PaintEventHandler(OnCanvasPaint);
@@ -236,68 +233,85 @@ namespace CloudNativeDesigner.Controls
             _canvasPanel.MouseMove += new MouseEventHandler(OnCanvasMouseMove);
             _canvasPanel.MouseUp += new MouseEventHandler(OnCanvasMouseUp);
             _canvasPanel.DoubleClick += new EventHandler(OnCanvasDoubleClick);
-            page.Controls.Add(_canvasPanel);
-
-            int x = 325;
-            int y = 38;
-
-            _btnAddVertex = new Button();
-            _btnAddVertex.Text = "添加顶点";
-            _btnAddVertex.Location = new Point(x, y);
-            _btnAddVertex.Size = new Size(120, 28);
-            _btnAddVertex.Click += new EventHandler(OnAddVertex);
-            page.Controls.Add(_btnAddVertex);
-            y += 34;
-
-            _btnDeleteVertex = new Button();
-            _btnDeleteVertex.Text = "删除顶点";
-            _btnDeleteVertex.Location = new Point(x, y);
-            _btnDeleteVertex.Size = new Size(120, 28);
-            _btnDeleteVertex.Click += new EventHandler(OnDeleteVertex);
-            page.Controls.Add(_btnDeleteVertex);
-            y += 34;
-
-            _btnClosePath = new Button();
-            _btnClosePath.Text = "闭合路径";
-            _btnClosePath.Location = new Point(x, y);
-            _btnClosePath.Size = new Size(120, 28);
-            _btnClosePath.Click += new EventHandler(OnToggleClosePath);
-            page.Controls.Add(_btnClosePath);
-            y += 40;
-
-            Button btnCopyDefault = new Button();
-            btnCopyDefault.Text = "复制默认图形";
-            btnCopyDefault.Location = new Point(x, y);
-            btnCopyDefault.Size = new Size(120, 28);
-            btnCopyDefault.Click += new EventHandler(OnCopyDefaultGeom);
-            page.Controls.Add(btnCopyDefault);
-            y += 34;
-
-            Button btnClearGeom = new Button();
-            btnClearGeom.Text = "清除图形";
-            btnClearGeom.Location = new Point(x, y);
-            btnClearGeom.Size = new Size(120, 28);
-            btnClearGeom.Click += new EventHandler(OnClearGeom);
-            page.Controls.Add(btnClearGeom);
-            y += 40;
-
-            Label lblHint = new Label();
-            lblHint.Text = "操作提示：\n· 单击画布添加顶点\n· 拖动顶点调整位置\n· 双击顶点删除\n· 至少需要3个顶点";
-            lblHint.Location = new Point(x, y);
-            lblHint.Size = new Size(120, 80);
-            lblHint.ForeColor = Color.FromArgb(100, 100, 100);
-            page.Controls.Add(lblHint);
+            grpGeom.Controls.Add(_canvasPanel);
 
             // 默认图形提示（不勾选时显示）
             _lblDefaultHint = new Label();
-            _lblDefaultHint.Text = "当前状态使用默认图形。\n勾选上方复选框以绘制\n该状态专属图形。";
-            _lblDefaultHint.Location = new Point(10, 38);
-            _lblDefaultHint.Size = new Size(300, 280);
+            _lblDefaultHint.Text = "当前状态使用默认/初始图形。\n勾选上方复选框以绘制\n该状态专属图形。";
+            _lblDefaultHint.Location = new Point(8, 42);
+            _lblDefaultHint.Size = new Size(300, 300);
             _lblDefaultHint.ForeColor = Color.FromArgb(120, 120, 120);
             _lblDefaultHint.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             _lblDefaultHint.BorderStyle = BorderStyle.FixedSingle;
             _lblDefaultHint.BackColor = Color.FromArgb(245, 245, 245);
-            page.Controls.Add(_lblDefaultHint);
+            grpGeom.Controls.Add(_lblDefaultHint);
+
+            // 右侧按钮
+            int bx = 320;
+            int by = 42;
+
+            _btnAddVertex = new Button();
+            _btnAddVertex.Text = "添加顶点";
+            _btnAddVertex.Location = new Point(bx, by);
+            _btnAddVertex.Size = new Size(120, 26);
+            _btnAddVertex.Click += new EventHandler(OnAddVertex);
+            grpGeom.Controls.Add(_btnAddVertex);
+            by += 30;
+
+            _btnDeleteVertex = new Button();
+            _btnDeleteVertex.Text = "删除顶点";
+            _btnDeleteVertex.Location = new Point(bx, by);
+            _btnDeleteVertex.Size = new Size(120, 26);
+            _btnDeleteVertex.Click += new EventHandler(OnDeleteVertex);
+            grpGeom.Controls.Add(_btnDeleteVertex);
+            by += 30;
+
+            _btnClosePath = new Button();
+            _btnClosePath.Text = "闭合路径";
+            _btnClosePath.Location = new Point(bx, by);
+            _btnClosePath.Size = new Size(120, 26);
+            _btnClosePath.Click += new EventHandler(OnToggleClosePath);
+            grpGeom.Controls.Add(_btnClosePath);
+            by += 34;
+
+            _btnGeomFillColor = new Button();
+            _btnGeomFillColor.Text = "填充颜色...";
+            _btnGeomFillColor.Location = new Point(bx, by);
+            _btnGeomFillColor.Size = new Size(120, 26);
+            _btnGeomFillColor.Click += new EventHandler(OnPickGeomFillColor);
+            grpGeom.Controls.Add(_btnGeomFillColor);
+            by += 30;
+
+            _btnGeomBorderColor = new Button();
+            _btnGeomBorderColor.Text = "边框颜色...";
+            _btnGeomBorderColor.Location = new Point(bx, by);
+            _btnGeomBorderColor.Size = new Size(120, 26);
+            _btnGeomBorderColor.Click += new EventHandler(OnPickGeomBorderColor);
+            grpGeom.Controls.Add(_btnGeomBorderColor);
+            by += 34;
+
+            _btnCopyDefault = new Button();
+            _btnCopyDefault.Text = "复制默认图形";
+            _btnCopyDefault.Location = new Point(bx, by);
+            _btnCopyDefault.Size = new Size(120, 26);
+            _btnCopyDefault.Click += new EventHandler(OnCopyDefaultGeom);
+            grpGeom.Controls.Add(_btnCopyDefault);
+            by += 30;
+
+            _btnClearGeom = new Button();
+            _btnClearGeom.Text = "清除图形";
+            _btnClearGeom.Location = new Point(bx, by);
+            _btnClearGeom.Size = new Size(120, 26);
+            _btnClearGeom.Click += new EventHandler(OnClearGeom);
+            grpGeom.Controls.Add(_btnClearGeom);
+            by += 34;
+
+            Label lblHint = new Label();
+            lblHint.Text = "操作提示：\n· 单击画布添加顶点\n· 拖动顶点调整位置\n· 双击顶点删除\n· 至少需要3个顶点";
+            lblHint.Location = new Point(bx, by);
+            lblHint.Size = new Size(130, 80);
+            lblHint.ForeColor = Color.FromArgb(100, 100, 100);
+            grpGeom.Controls.Add(lblHint);
 
             // 加载已有图形数据
             bool hasCustom = (editState != null && editState.UseCustomRenderCommands
@@ -315,7 +329,6 @@ namespace CloudNativeDesigner.Controls
             }
 
             UpdateGeometryVisibility();
-            _tabControl.TabPages.Add(page);
         }
 
         private void UpdateGeometryVisibility()
@@ -325,6 +338,10 @@ namespace CloudNativeDesigner.Controls
             _btnAddVertex.Visible = visible;
             _btnDeleteVertex.Visible = visible;
             _btnClosePath.Visible = visible;
+            _btnGeomFillColor.Visible = visible;
+            _btnGeomBorderColor.Visible = visible;
+            _btnCopyDefault.Visible = visible;
+            _btnClearGeom.Visible = visible;
             _lblDefaultHint.Visible = !visible;
         }
 
@@ -332,6 +349,10 @@ namespace CloudNativeDesigner.Controls
         {
             UpdateGeometryVisibility();
         }
+
+        #endregion
+
+        #region 图形加载与构建
 
         /// <summary>
         /// 从 RenderCommand 列表还原顶点（假设第一条是多边形命令）
@@ -355,7 +376,7 @@ namespace CloudNativeDesigner.Controls
             if (polyCmd != null && polyCmd.PolygonPoints != null && polyCmd.PolygonPoints.Length >= 3)
             {
                 float canvasW = 260f;
-                float canvasH = 240f;
+                float canvasH = 260f;
                 float offsetX = 20f;
                 float offsetY = 20f;
 
@@ -417,7 +438,7 @@ namespace CloudNativeDesigner.Controls
         {
             if (_defaultCommands == null || _defaultCommands.Count == 0)
             {
-                MessageBox.Show("当前自定义形状没有默认图形可供复制。", "提示",
+                MessageBox.Show("当前自定义形状没有默认/初始图形可供复制。", "提示",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
@@ -649,6 +670,26 @@ namespace CloudNativeDesigner.Controls
             }
         }
 
+        private void OnPickGeomFillColor(object sender, EventArgs e)
+        {
+            _colorDialog.Color = _geomFillColor;
+            if (_colorDialog.ShowDialog() == DialogResult.OK)
+            {
+                _geomFillColor = _colorDialog.Color;
+                _canvasPanel.Invalidate();
+            }
+        }
+
+        private void OnPickGeomBorderColor(object sender, EventArgs e)
+        {
+            _colorDialog.Color = _geomBorderColor;
+            if (_colorDialog.ShowDialog() == DialogResult.OK)
+            {
+                _geomBorderColor = _colorDialog.Color;
+                _canvasPanel.Invalidate();
+            }
+        }
+
         #endregion
 
         #region 构建结果
@@ -676,7 +717,7 @@ namespace CloudNativeDesigner.Controls
                     ResultState.CustomRenderCommands = BuildRenderCommands();
                     if (ResultState.CustomRenderCommands == null)
                     {
-                        MessageBox.Show("自定义图形至少需要 3 个顶点，已自动恢复为使用默认图形。", "提示",
+                        MessageBox.Show("自定义图形至少需要 3 个顶点，已自动恢复为使用默认/初始图形。", "提示",
                             MessageBoxButtons.OK, MessageBoxIcon.Warning);
                         ResultState.UseCustomRenderCommands = false;
                         ResultState.CustomRenderCommands = new List<RenderCommand>();

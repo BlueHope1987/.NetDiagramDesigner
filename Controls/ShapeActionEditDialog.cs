@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
 using CloudNativeDesigner.Core;
@@ -8,12 +9,13 @@ namespace CloudNativeDesigner.Controls
     /// <summary>
     /// 图形行为（右键菜单操作）编辑对话框。
     /// 用于添加或编辑单个 ShapeAction。
+    /// 切换状态行为可从已定义状态中枚举选择目标状态。
     /// </summary>
     public class ShapeActionEditDialog : Form
     {
         private TextBox _txtName;
         private ComboBox _cmbType;
-        private TextBox _txtTargetState;
+        private ComboBox _cmbTargetState;
         private TextBox _txtCallback;
         private TextBox _txtIconName;
         private Label _lblTargetState;
@@ -21,12 +23,18 @@ namespace CloudNativeDesigner.Controls
         private Button _btnOk;
         private Button _btnCancel;
 
+        private List<string> _stateNames;
+
         public ShapeAction ResultAction { get; private set; }
 
-        public ShapeActionEditDialog() : this(null) { }
+        public ShapeActionEditDialog() : this(null, null) { }
 
-        public ShapeActionEditDialog(ShapeAction editAction)
+        public ShapeActionEditDialog(ShapeAction editAction) : this(editAction, null) { }
+
+        public ShapeActionEditDialog(ShapeAction editAction, List<string> stateNames)
         {
+            _stateNames = stateNames ?? new List<string>();
+
             this.Text = (editAction == null) ? "添加行为" : "编辑行为";
             this.StartPosition = FormStartPosition.CenterParent;
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -72,7 +80,7 @@ namespace CloudNativeDesigner.Controls
             this.Controls.Add(_cmbType);
             y += 32;
 
-            // 目标状态（StateChange 时显示）
+            // 目标状态（StateChange 时显示，枚举选择）
             _lblTargetState = new Label();
             _lblTargetState.Text = "目标状态：";
             _lblTargetState.Location = new Point(10, y);
@@ -80,11 +88,31 @@ namespace CloudNativeDesigner.Controls
             _lblTargetState.TextAlign = System.Drawing.ContentAlignment.MiddleRight;
             this.Controls.Add(_lblTargetState);
 
-            _txtTargetState = new TextBox();
-            _txtTargetState.Location = new Point(xVal, y);
-            _txtTargetState.Size = new Size(220, 22);
-            _txtTargetState.Text = (editAction != null) ? editAction.TargetState : "";
-            this.Controls.Add(_txtTargetState);
+            _cmbTargetState = new ComboBox();
+            _cmbTargetState.DropDownStyle = ComboBoxStyle.DropDownList;
+            _cmbTargetState.Location = new Point(xVal, y);
+            _cmbTargetState.Size = new Size(220, 22);
+            // 填充已定义状态名
+            foreach (string name in _stateNames)
+                _cmbTargetState.Items.Add(name);
+            // 选中当前值
+            if (editAction != null && !string.IsNullOrEmpty(editAction.TargetState))
+            {
+                int selIdx = _cmbTargetState.Items.IndexOf(editAction.TargetState);
+                if (selIdx >= 0)
+                    _cmbTargetState.SelectedIndex = selIdx;
+                else
+                {
+                    // 若目标状态不在列表中，添加到末尾并选中
+                    _cmbTargetState.Items.Add(editAction.TargetState);
+                    _cmbTargetState.SelectedIndex = _cmbTargetState.Items.Count - 1;
+                }
+            }
+            else if (_cmbTargetState.Items.Count > 0)
+            {
+                _cmbTargetState.SelectedIndex = 0;
+            }
+            this.Controls.Add(_cmbTargetState);
             y += 32;
 
             // 回调名（HostCallback 时显示）
@@ -141,7 +169,7 @@ namespace CloudNativeDesigner.Controls
         {
             bool isStateChange = (_cmbType.SelectedIndex == 0);
             _lblTargetState.Visible = isStateChange;
-            _txtTargetState.Visible = isStateChange;
+            _cmbTargetState.Visible = isStateChange;
             _lblCallback.Visible = !isStateChange;
             _txtCallback.Visible = !isStateChange;
         }
@@ -162,7 +190,8 @@ namespace CloudNativeDesigner.Controls
                 if (_cmbType.SelectedIndex == 0)
                 {
                     ResultAction.ActionType = ShapeActionType.StateChange;
-                    ResultAction.TargetState = _txtTargetState.Text.Trim();
+                    ResultAction.TargetState = (_cmbTargetState.SelectedItem != null)
+                        ? _cmbTargetState.SelectedItem.ToString() : "";
                 }
                 else
                 {
