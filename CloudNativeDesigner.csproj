@@ -54,7 +54,6 @@
     <Compile Include="Controls\ToolboxPanel.cs" />
     <Compile Include="Controls\ToolboxConfigDialog.cs" />
     <Compile Include="Controls\CustomShapeDialog.cs" />
-    <Compile Include="Controls\ShapeStateEditDialog.cs" />
     <Compile Include="Controls\ShapeActionEditDialog.cs" />
     <Compile Include="Controls\DrawingCanvas.cs" />
     <Compile Include="Controls\DrawingCanvas.Rendering.cs" />
