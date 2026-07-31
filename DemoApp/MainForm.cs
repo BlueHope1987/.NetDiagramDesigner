@@ -2,11 +2,11 @@ using System;
 using System.Drawing;
 using System.IO;
 using System.Windows.Forms;
-using CloudNativeDesigner.Config;
-using CloudNativeDesigner.Controls;
-using CloudNativeDesigner.Core;
-using CloudNativeDesigner.Serialization;
-using CloudNativeDesigner.Shapes;
+using DiagramDesigner.Config;
+using DiagramDesigner.Controls;
+using DiagramDesigner.Core;
+using DiagramDesigner.Serialization;
+using DiagramDesigner.Shapes;
 
 namespace DemoApp
 {
@@ -33,12 +33,13 @@ namespace DemoApp
 
             // 4. 控件会自动注入其余菜单（编辑/视图/工具/图形）
 
-            this.Text = "云原生可视化设计器 - 演示应用";
+            this.Text = "Marvin's DiagramDesigner - Demo";
             this.Size = new Size(1400, 900);
             this.StartPosition = FormStartPosition.CenterScreen;
             this.Icon = SystemIcons.Application;
 
             InitializeShapeTypes();
+            WireEditorEvents();
 
             // ===== 示范：两种自定义图形定义方式 =====
 
@@ -185,9 +186,9 @@ namespace DemoApp
         private void UpdateTitle()
         {
             if (string.IsNullOrEmpty(_currentFilePath))
-                this.Text = "云原生可视化设计器 - 演示应用";
+                this.Text = "Marvin's DiagramDesigner - Demo";
             else
-                this.Text = "云原生可视化设计器 - " + Path.GetFileName(_currentFilePath);
+                this.Text = "Marvin's DiagramDesigner - " + Path.GetFileName(_currentFilePath);
         }
 
         #endregion
@@ -220,6 +221,54 @@ namespace DemoApp
             // ShapeTypeRegistry.Instance.Register(custom);
 
             _editor.Toolbox.ReloadFromRegistry();
+        }
+
+        #endregion
+
+        #region Editor Events
+
+        /// <summary>
+        /// 订阅编辑器事件，示范宿主如何响应图形/连线的增删与状态切换。
+        /// 实际应用中宿主可据此同步外部数据源、记录操作日志或触发业务逻辑。
+        /// </summary>
+        private void WireEditorEvents()
+        {
+            _editor.ShapeAdded += new EventHandler<ShapeEventArgs>(OnEditorShapeAdded);
+            _editor.ShapeDeleted += new EventHandler<ShapeEventArgs>(OnEditorShapeDeleted);
+            _editor.ConnectionAdded += new EventHandler<ConnectionEventArgs>(OnEditorConnectionAdded);
+            _editor.ConnectionDeleted += new EventHandler<ConnectionEventArgs>(OnEditorConnectionDeleted);
+            _editor.ShapeStateChanged += new EventHandler<ShapeStateChangedEventArgs>(OnEditorShapeStateChanged);
+        }
+
+        private void OnEditorShapeAdded(object sender, ShapeEventArgs e)
+        {
+            System.Diagnostics.Debug.WriteLine(
+                "[Event] 图形添加: " + e.ShapeName + " (类型: " + e.ShapeTypeName + ")");
+        }
+
+        private void OnEditorShapeDeleted(object sender, ShapeEventArgs e)
+        {
+            System.Diagnostics.Debug.WriteLine(
+                "[Event] 图形删除: " + e.ShapeName);
+        }
+
+        private void OnEditorConnectionAdded(object sender, ConnectionEventArgs e)
+        {
+            System.Diagnostics.Debug.WriteLine(
+                "[Event] 连线创建: " + e.FromShapeName + " -> " + e.ToShapeName);
+        }
+
+        private void OnEditorConnectionDeleted(object sender, ConnectionEventArgs e)
+        {
+            System.Diagnostics.Debug.WriteLine(
+                "[Event] 连线删除: " + e.FromShapeName + " -> " + e.ToShapeName);
+        }
+
+        private void OnEditorShapeStateChanged(object sender, ShapeStateChangedEventArgs e)
+        {
+            System.Diagnostics.Debug.WriteLine(
+                "[Event] 状态切换: " + e.Shape.Name +
+                " (" + e.OldStateName + " -> " + e.NewStateName + ")");
         }
 
         #endregion

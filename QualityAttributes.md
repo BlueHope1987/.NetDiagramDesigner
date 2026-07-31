@@ -1,12 +1,13 @@
-# CloudNativeDesigner 质量属性说明书
+# Marvin's DiagramDesigner 质量属性说明书
 
 ## 1. 可用性
 
 ### 1.1 拖放即用
 
-DiagramEditor 作为标准 UserControl，可被 Visual Studio 设计器直接拖放到 WinForms 窗体上。控件库项目（CloudNativeDesigner）输出类型为 Library，宿主应用通过 ProjectReference 引用后即可在设计器中使用。
+DiagramEditor 作为标准 UserControl，可被 Visual Studio 设计器直接拖放到 WinForms 窗体上。控件库项目（`DiagramDesigner/`）输出类型为 Library，宿主应用通过 ProjectReference 引用后即可在设计器中使用。
 
-相关代码（DemoApp 中仅 3 行即可完成集成）：
+DemoApp 中仅需 3 行代码即可完成集成：
+
 ```csharp
 _editor = new DiagramEditor();
 _editor.Dock = DockStyle.Fill;
@@ -15,65 +16,42 @@ this.Controls.Add(_editor);
 
 ### 1.2 延迟初始化
 
-DiagramEditor 的 SplitterDistance 不在构造函数中设置，而是通过 `Layout` 事件延迟初始化：
-
-```csharp
-this.Layout += new LayoutEventHandler(OnEditorLayout);
-```
-
-`OnEditorLayout` 在控件首次获得有效尺寸（`Width > 50 && Height > 50`）时才执行 `ApplySplitterDistances`，确保在任何宿主窗体尺寸下都不会因 SplitterDistance 超出范围而抛出异常。
+DiagramEditor 的 SplitterDistance 不在构造函数中设置，而是通过 `Layout` 事件延迟初始化。`OnEditorLayout` 在控件首次获得有效尺寸（`Width > 50 && Height > 50`）时才执行 `ApplySplitterDistances`，避免在任何宿主窗体尺寸下因 SplitterDistance 超出范围而抛出异常。
 
 ### 1.3 SplitterDistance 安全钳制
 
-`SafeSetSplitterDistance` 方法对 SplitterDistance 进行严格的安全钳制：
-
-1. 根据 `FixedPanel` 方向判断 SplitterDistance 的计算方式（从左侧或从右侧）
-2. 使用 `Panel1MinSize` / `Panel2MinSize` 计算合法范围 `[min, max]`
-3. 将目标值钳制到合法范围内
-4. 如果钳制后仍不在 `(0, width)` 范围内，按 `fallbackRatio` 比例回退
-5. 整个操作包裹在 `try-catch` 中，静默忽略异常
+`SafeSetSplitterDistance` 对 SplitterDistance 进行多层保护：根据 `FixedPanel` 方向判断计算方式，使用 `Panel1MinSize` / `Panel2MinSize` 计算合法范围并钳制目标值，超出范围时按 `fallbackRatio` 比例回退，整个操作包裹在 try-catch 中静默忽略异常。
 
 ### 1.4 初始化顺序无关性
 
-`ConfigureMenu` / `ConfigureHostForm` 均为可选调用。控件在没有调用这些方法的情况下仍可正常工作（画布、工具箱、属性栏、工具栏、状态栏均可正常使用，仅缺少菜单注入功能）。
-
-两个方法的调用顺序也不受限：可以先调用 `ConfigureMenu`，也可以先调用 `ConfigureHostForm`，或者只调用其中一个。
+`ConfigureMenu` / `ConfigureHostForm` 均为可选调用。控件在没有调用这些方法的情况下仍可正常工作（画布、工具箱、属性栏、工具栏、状态栏均可使用，仅缺少菜单注入功能）。两个方法的调用顺序也不受限。
 
 ---
 
 ## 2. 可复用性
 
-### 2.1 控件库/演示应用分离
+### 2.1 控件库与演示应用分离
 
-解决方案明确分为两个项目：
+解决方案采用并行目录结构，分为两个项目：
 
-| 项目 | 类型 | 职责 |
-|------|------|------|
-| CloudNativeDesigner | Library | 纯控件库，不包含任何宿主逻辑 |
-| DemoApp | WinExe | 演示应用，展示集成方式和图形类型注册 |
+| 项目 | 目录 | 类型 | 职责 |
+|------|------|------|------|
+| DiagramDesigner | `DiagramDesigner/` | Library | 纯控件库，不包含任何宿主逻辑 |
+| DemoApp | `DemoApp/` | WinExe | 演示应用，展示集成方式和图形类型注册 |
 
 宿主应用通过 ProjectReference 引用控件库 DLL，实现了完全的编译时分离。
 
 ### 2.2 DiagramEditor 单对象封装
 
-DiagramEditor 作为 Facade 模式的复合控件，封装了所有子组件（DrawingCanvas、ToolboxPanel、PropertyGrid、ToolStrip、StatusStrip），宿主只需与一个 DiagramEditor 实例交互即可使用全部功能。
-
-公共属性 `Canvas`、`Toolbox`、`ToolStrip`、`StatusStrip`、`Document` 允许宿主在需要时直接访问子组件。
+DiagramEditor 作为 Facade 模式的复合控件，封装了所有子组件（DrawingCanvas、ToolboxPanel、PropertyGrid、ToolStrip、StatusStrip），宿主只需与一个 DiagramEditor 实例交互即可使用全部功能。公共属性 `Canvas`、`Toolbox`、`ToolStrip`、`StatusBar`、`Document` 允许宿主在需要时直接访问子组件。
 
 ### 2.3 图形类型从控件剥离
 
-控件库不包含任何图形类型定义（ShapeType 注册）。所有 13 种图形类型由 DemoApp 在 `MainForm.InitializeShapeTypes()` 中注册。
-
-ShapeTypeRegistry 是一个通用的存储机制，不与特定图形类型耦合。不同的宿主应用可以注册完全不同的图形集合，而控件库无需任何修改。
+控件库不包含任何图形类型定义。所有图形类型由宿主应用注册。`ShapeTypeRegistry` 是一个通用的存储机制，不与特定图形类型耦合。不同的宿主应用可以注册完全不同的图形集合，而控件库无需任何修改。
 
 ### 2.4 菜单注入机制
 
-DiagramEditor 的菜单通过注入机制集成到宿主菜单栏：
-
-- `FindOrCreateMenu` 按文本查找已有菜单项，不存在则创建新的
-- 不强制宿主创建特定结构的菜单
-- 如果宿主已有"文件(&F)"菜单，控件会向其中追加菜单项；如果没有则自动创建
-- 菜单注入是可选的，不注入不影响控件其他功能
+DiagramEditor 的菜单通过注入机制集成到宿主菜单栏。`FindOrCreateMenu` 按文本查找已有菜单项，不存在则创建新的，不强制宿主创建特定结构的菜单。菜单注入是可选的，不注入不影响控件其他功能。
 
 ---
 
@@ -83,50 +61,28 @@ DiagramEditor 的菜单通过注入机制集成到宿主菜单栏：
 
 RenderCommand 使用相对坐标（0~1 范围）描述图形绘制指令。新增图形类型只需定义一组 RenderCommand 即可实现任意外观，无需修改控件库代码。
 
-当前支持的 RenderCommandType：
-- `Rectangle` — 矩形
-- `RoundedRect` — 圆角矩形（支持 CornerRadius）
-- `Ellipse` — 椭圆
-- `Polygon` — 多边形（支持任意数量的顶点）
-- `Line` — 直线
-- `Text` — 文本（支持对齐、字号、加粗）
-- `MemberArea` — 成员区域（预留类型）
+当前支持的 RenderCommandType：`Rectangle`、`RoundedRect`、`Ellipse`、`Polygon`、`Line`、`Text`、`MemberArea`。新增绘制类型只需在枚举中添加新值，并在 `Execute` 的 switch 中添加对应分支。
 
-如果需要新增绘制类型，只需在 RenderCommandType 枚举中添加新值，并在 RenderCommand.Execute 的 switch 中添加对应分支。
+`ShapeLibrary` 预定义了大量常用图形类型供宿主直接使用，`ShapeComposer` 支持通过 Union/Subtract/Intersect/Xor 布尔运算组合复合图形。
 
 ### 3.2 ShapeTypeRegistry 运行时注册
 
-图形类型可在运行时动态注册：
+图形类型可在运行时动态注册、注销、清空重建。`ToolboxPanel.ReloadFromRegistry()` 可随时刷新工具箱以反映注册表的最新状态。
 
-```csharp
-ShapeTypeRegistry.Instance.Register(shapeType);  // 注册
-ShapeTypeRegistry.Instance.Unregister("名称");   // 注销
-ShapeTypeRegistry.Instance.Clear();              // 清空重建
-```
-
-`ToolboxPanel.ReloadFromRegistry()` 可随时刷新工具箱以反映注册表的最新状态。
-
-### 3.3 类图成员系统
+### 3.3 类图成员与状态系统
 
 GenericShape 的 `ShapeMember`/`ShapeMemberParameter`/`ShapeState` 构成了完整的类图成员系统：
 
-- **ShapeMember**：支持 5 种成员类型（Property/Method/Event/Constraint/Field）、4 种可见性（Public/Private/Protected/Internal）、静态/抽象修饰符、参数列表
-- **ShapeState**：支持多状态定义，每种状态有独立的颜色方案
-- **成员签名生成**：`GetSignature()` 自动生成 UML 风格签名（如 `+ GetUser(id : Guid) : User`）
-
-这套系统使得 GenericShape 可以同时充当通用图形和 UML 类图节点。
+- **ShapeMember**：支持 5 种成员类型（Property/Method/Event/Constraint/Field）、4 种可见性（Public/Private/Protected/Internal）、静态/抽象修饰符、参数列表，`GetSignature()` 自动生成 UML 风格签名。
+- **ShapeState**：支持多状态定义，每种状态有独立的颜色方案，图形可在状态间切换。
 
 ### 3.4 连线模式可扩展
 
-ConnectionMode 枚举当前定义了 3 种模式：`Straight`、`Curve`、`Orthogonal`。连线绘制逻辑在 Connection 类的 `GetDrawPoints()` 和 `Draw()` 方法中根据模式分派。
-
-如果需要新增连线模式，只需在 ConnectionMode 枚举中添加新值，并在 `GetDrawPoints()` 和 `Draw()` 中添加对应的控制点计算和绘制逻辑。
+ConnectionMode 枚举当前定义了 3 种模式：`Straight`、`Curve`、`Orthogonal`。新增连线模式只需在枚举中添加新值，并在 `GetDrawPoints()` 和 `Draw()` 中添加对应的控制点计算和绘制逻辑。
 
 ### 3.5 主题颜色可配置
 
-GlobalConfig 提供了 9 个主题感知的只读颜色属性，通过 EditorTheme 枚举在 Light/Dark 之间切换。新增自定义主题只需扩展 EditorTheme 枚举并在各属性中添加对应的颜色分支。
-
-MyColorTable 覆盖了 20 个 ProfessionalColorTable 属性，所有颜色值均可根据主题需求调整。
+GlobalConfig 提供了 9 个主题感知的只读颜色属性，通过 EditorTheme 枚举在 Light/Dark 之间切换。MyColorTable 覆盖了 20+ 个 ProfessionalColorTable 属性，所有颜色值均可根据主题需求调整。
 
 ---
 
@@ -134,61 +90,25 @@ MyColorTable 覆盖了 20 个 ProfessionalColorTable 属性，所有颜色值均
 
 ### 4.1 双缓冲绘制
 
-DrawingCanvas 使用 `BufferedGraphicsContext` 实现双缓冲绘制，避免画面闪烁：
-
-```csharp
-_bufferContext = BufferedGraphicsManager.Current;
-_bufferContext.MaximumBuffer = new Size(4096, 4096);
-```
-
-在 `OnPaint` 中，所有绘制操作先执行到缓冲区，最后一次性通过 `_bufferedGraphics.Render(e.Graphics)` 输出到屏幕。
-
-结合构造函数中的 `ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint` 设置，实现了三层缓冲保护。
+DrawingCanvas 使用 `BufferedGraphicsContext` 实现双缓冲绘制，最大缓冲 4096x4096。在 `OnPaint` 中，所有绘制操作先执行到缓冲区，最后一次性通过 `_bufferedGraphics.Render(e.Graphics)` 输出到屏幕。结合构造函数中的 `ControlStyles.OptimizedDoubleBuffer | AllPaintingInWmPaint` 设置，实现了多层缓冲保护。
 
 ### 4.2 GraphicsState Save/Restore
 
-框选矩形绘制和容器内连线裁剪使用 `Graphics.Save()` / `Graphics.Restore()` 保存和恢复图形状态：
-
-**框选矩形**（DrawSelectionRect）：
-- 使用半透明填充和虚线边框绘制框选区域
-
-**容器内连线裁剪**（DrawConnectionsForContainer）：
-```csharp
-GraphicsState state = g.Save();
-g.Clip = new Region(clipRect);  // 设置裁剪区域
-conn.Draw(g, _zoom);            // 在裁剪区域内绘制连线
-g.Restore(state);               // 恢复裁剪区域
-```
-
-这种模式确保裁剪操作不会影响后续绘制。
+框选矩形绘制和容器内连线裁剪使用 `Graphics.Save()` / `Graphics.Restore()` 保存和恢复图形状态，裁剪操作不会影响后续绘制。
 
 ### 4.3 容器裁剪避免冗余绘制
 
-ContainerShape.Draw 使用裁剪区域限制子元素绘制范围：
+ContainerShape.Draw 使用裁剪区域限制子元素绘制范围，避免子元素绘制溢出到容器外部造成的视觉污染和冗余绘制。连线也采用分层绘制策略：容器内连线在容器绘制阶段裁剪渲染，全局连线阶段跳过已渲染的容器内连线，避免重复绘制。
 
-```csharp
-GraphicsState state = g.Save();
-g.Clip = new Region(bodyRect);
-// 只在 bodyRect 范围内绘制子元素
-g.Restore(state);
-```
+### 4.4 背景绘制不受缩放影响
 
-这避免了子元素绘制溢出到容器外部造成的视觉污染和冗余绘制。
+背景渐变绘制在 `TranslateTransform` / `ScaleTransform` 之前执行，使用屏幕像素坐标直接绘制。背景效果在任何缩放级别下保持一致，且不参与坐标变换计算，减少不必要的矩阵运算。
 
-连线也采用分层绘制策略：容器内连线在容器绘制阶段裁剪渲染，全局连线阶段跳过已渲染的容器内连线，避免重复绘制。
+### 4.5 控件级优化
 
-### 4.4 DrawBackground 不受缩放影响
-
-背景渐变绘制在 `TranslateTransform` / `ScaleTransform` 之前执行，使用屏幕像素坐标直接绘制。这确保了：
-- 背景效果在任何缩放级别下保持一致
-- 不会因缩放导致背景渐变变形
-- 背景绘制不参与坐标变换计算，减少不必要的矩阵运算
-
-### 4.5 控件级别的优化
-
-- `ToolboxPanel.DoubleBuffered = true`：工具箱面板启用双缓冲
-- `ToolboxPanel.AutoScroll = true`：支持自动滚动，只在可视区域内绘制
-- 图标预生成（`CreateIconFromType`）：工具箱图标在注册时一次性生成，不在每次绘制时重新创建
+- `ToolboxPanel.DoubleBuffered = true`：工具箱面板启用双缓冲。
+- `ToolboxPanel.AutoScroll = true`：支持自动滚动，只在可视区域内绘制。
+- 图标预生成（`CreateIconFromType`）：工具箱图标在注册时一次性生成，不在每次绘制时重新创建。
 
 ---
 
@@ -196,61 +116,36 @@ g.Restore(state);
 
 ### 5.1 partial class 拆分
 
-DrawingCanvas 使用 partial class 拆分为两个文件：
+DrawingCanvas 和 DiagramEditor 均使用 partial class 拆分为两个文件，使每个文件保持在合理的代码量内，职责清晰，便于定位和修改。
 
-| 文件 | 职责 |
-|------|------|
-| `DrawingCanvas.cs` | 交互逻辑：鼠标事件、键盘事件、拖放、坐标转换、连线创建、容器成员管理 |
-| `DrawingCanvas.Rendering.cs` | 渲染逻辑：OnPaint 管线、DrawBackground、DrawGrid、DrawShapes、DrawConnections |
-
-DiagramEditor 同样拆分为两个文件：
-
-| 文件 | 职责 |
-|------|------|
-| `DiagramEditor.cs` | 组件初始化、布局、公共属性/方法、菜单注入、主题系统 |
-| `DiagramEditor.Commands.cs` | 菜单/工具栏/画布事件处理、右键菜单、上下文感知菜单 |
-
-这种拆分使得每个文件保持在合理的代码量内（400~720 行），职责清晰，便于定位和修改。
+| 控件 | 文件 | 职责 |
+|------|------|------|
+| DrawingCanvas | `DrawingCanvas.cs` | 交互逻辑：鼠标事件、键盘事件、拖放、坐标转换 |
+| DrawingCanvas | `DrawingCanvas.Rendering.cs` | 渲染逻辑：OnPaint 管线、DrawBackground、DrawGrid、DrawShapes |
+| DiagramEditor | `DiagramEditor.cs` | 组件初始化、布局、公共属性/方法、菜单注入、主题系统 |
+| DiagramEditor | `DiagramEditor.Commands.cs` | 菜单/工具栏/画布事件处理、右键菜单、上下文感知菜单 |
 
 ### 5.2 GraphicsUtility 消除重复代码
 
-`GraphicsUtility` 是一个静态工具类，集中了圆角矩形路径创建和绘制的方法，被 ContainerShape.Draw、RenderCommand.DrawRoundedRect 等多处复用。
-
-避免了在多个绘制方法中重复编写圆角矩形路径构建代码（4 个 AddArc + CloseFigure 的组合）。
+`GraphicsUtility` 静态工具类集中了圆角矩形路径创建和绘制方法，被 ContainerShape.Draw、RenderCommand 等多处复用，避免了重复编写圆角矩形路径构建代码。
 
 ### 5.3 关注点分离
 
-代码按以下 5 个层次组织，每个层次有明确的职责边界：
+代码按 5 个层次组织，每个层次有明确的职责边界：
 
 | 层 | 命名空间 | 职责 |
 |---|----------|------|
-| Core | `CloudNativeDesigner.Core` | 基础数据模型和工具（ShapeBase、Connection、Document、RenderCommand、序列化颜色） |
-| Shapes | `CloudNativeDesigner.Shapes` | 具体图形实现（GenericShape、ContainerShape） |
-| Controls | `CloudNativeDesigner.Controls` | UI 控件（DrawingCanvas、ToolboxPanel、DiagramEditor） |
-| Config | `CloudNativeDesigner.Config` | 全局配置（GlobalConfig） |
-| Serialization | `CloudNativeDesigner.Serialization` | 持久化（DocumentData DTO、XmlShapeSerializer） |
+| Core | `DiagramDesigner.Core` | 基础数据模型和工具 |
+| Shapes | `DiagramDesigner.Shapes` | 具体图形实现 |
+| Controls | `DiagramDesigner.Controls` | UI 控件与对话框 |
+| Config | `DiagramDesigner.Config` | 全局配置 |
+| Serialization | `DiagramDesigner.Serialization` | 持久化 |
 
-每个类都有单一的核心职责，类之间的依赖关系清晰：
-- Core 不依赖 Shapes 和 Controls
-- Shapes 依赖 Core
-- Controls 依赖 Core、Shapes、Config、Serialization
-- Config 依赖 Core（仅使用 ConnectionMode 枚举）
-- Serialization 依赖 Core、Shapes
+类间依赖关系清晰：Core 不依赖 Shapes 和 Controls；Shapes 依赖 Core；Controls 依赖 Core、Shapes、Config、Serialization；Config 依赖 Core；Serialization 依赖 Core、Shapes。
 
 ### 5.4 C# 2.0 严格兼容
 
-整个代码库严格遵守 .NET Framework 2.0 的语法限制：
-
-- **不使用** `var` 关键字（所有变量显式声明类型）
-- **不使用** lambda 表达式（所有委托使用 `new EventHandler(method)` 语法）
-- **不使用** LINQ（所有集合操作使用 for/foreach 循环）
-- **不使用** 扩展方法
-- **不使用** 自动属性（所有属性使用显式私有字段 + get/set 访问器）
-- **不使用** 对象/集合初始化器
-- **不使用** null 条件运算符（`?.`）
-- **不使用** 字符串插值（使用 `string.Format`）
-
-这种严格兼容性确保了代码可以在 Visual Studio 2005 / .NET Framework 2.0 环境中编译和运行。
+整个代码库严格遵守 .NET Framework 2.0 的语法限制：不使用 `var`、lambda 表达式、LINQ、扩展方法、自动属性、对象/集合初始化器、null 条件运算符（`?.`）、字符串插值（使用 `string.Format`）。这保证了代码可以在 Visual Studio 2005 / .NET Framework 2.0 环境中编译和运行。
 
 ---
 
@@ -264,7 +159,7 @@ DiagramEditor 同样拆分为两个文件：
 
 ### 6.2 引用依赖
 
-控件库仅依赖 4 个标准 .NET 程序集：
+控件库仅依赖 4 个标准 .NET 程序集，无任何第三方依赖：
 
 | 程序集 | 用途 |
 |--------|------|
@@ -273,80 +168,37 @@ DiagramEditor 同样拆分为两个文件：
 | `System.Windows.Forms` | Control、UserControl、PropertyGrid 等控件 |
 | `System.Xml` | XmlSerializer（用于文档序列化） |
 
-无任何第三方依赖。
-
 ### 6.3 System.Drawing.Drawing2D API
 
-代码大量使用 `System.Drawing.Drawing2D` 命名空间：
-- `GraphicsPath` — 圆角矩形路径、多边形路径
-- `LinearGradientBrush` / `PathGradientBrush` — 背景渐变
-- `MatrixTransform` — 坐标变换（TranslateTransform / ScaleTransform）
-- `GraphicsState` — 保存/恢复图形状态
-- `SmoothingMode` — 抗锯齿
-- `DashStyle` — 线型
-- `WrapMode` — 渐变填充模式
-
-这些 API 在 .NET Framework 1.1+ 中均已存在，具有极高的向后兼容性。
+代码大量使用 `System.Drawing.Drawing2D` 命名空间：`GraphicsPath`、`LinearGradientBrush` / `PathGradientBrush`、坐标变换、`GraphicsState`、`SmoothingMode`、`DashStyle`、`WrapMode`。这些 API 在 .NET Framework 1.1+ 中均已存在，具有极高的向后兼容性。
 
 ### 6.4 WinForms 标准控件
 
-DiagramEditor 使用的子控件全部为 WinForms 标准控件：
-- `SplitContainer`（2 个，嵌套布局）
-- `PropertyGrid`（属性编辑）
-- `ToolStrip`（工具栏）
-- `MenuStrip`（菜单栏）
-- `StatusStrip`（状态栏）
-- `ContextMenuStrip`（右键菜单）
-- `OpenFileDialog` / `SaveFileDialog`（文件对话框）
-- `ToolTip`（工具提示）
-
-不依赖任何第三方 UI 组件库。
+DiagramEditor 使用的子控件全部为 WinForms 标准控件（SplitContainer、PropertyGrid、ToolStrip、MenuStrip、StatusStrip、ContextMenuStrip、OpenFileDialog/SaveFileDialog、ToolTip），不依赖任何第三方 UI 组件库。
 
 ---
 
 ## 7. 健壮性
 
-### 7.1 SplitterDistance 范围钳制 + try-catch
+### 7.1 SplitterDistance 范围钳制
 
-`SafeSetSplitterDistance` 方法对 SplitterDistance 的设置进行了三层保护：
+`SafeSetSplitterDistance` 对 SplitterDistance 的设置进行了三层保护：范围计算、值钳制、异常捕获。即使宿主窗体尺寸极小或布局异常，也不会抛出未处理异常。
 
-1. **范围计算**：根据 `Panel1MinSize` / `Panel2MinSize` 计算合法范围
-2. **值钳制**：将目标值限制在 `[min, max]` 范围内
-3. **异常捕获**：整个操作包裹在 `try-catch` 中，静默忽略所有异常
+### 7.2 null 防护
 
-即使宿主窗体尺寸极小或布局异常，也不会抛出未处理异常。
-
-### 7.2 null 防护（所有菜单项字段）
-
-DiagramEditor 中所有菜单项字段（`_menuViewGrid`、`_menuViewSnap`、`_menuEditDelete` 等）在使用前均进行 null 检查：
-
-```csharp
-if (_menuViewGrid != null)
-    _menuViewGrid.Checked = GlobalConfig.Instance.ShowGrid;
-```
-
-这确保了在 `InjectMenus()` 未被调用（宿主未调用 `ConfigureMenu`）的情况下，所有属性设置和事件处理方法不会因 null 引用而崩溃。
-
-类似的 null 检查也应用于：
-- 工具栏按钮字段（`_btnSelect`、`_btnCurve` 等）
-- 状态栏标签（`_statusLabel`、`_zoomLabel`）
-- 宿主 MenuStrip（`_hostMenu`）
+DiagramEditor 中所有菜单项字段、工具栏按钮字段、状态栏标签、宿主 MenuStrip 在使用前均进行 null 检查。这在 `InjectMenus()` 未被调用（宿主未调用 `ConfigureMenu`）的情况下，所有属性设置和事件处理方法不会因 null 引用而崩溃。
 
 ### 7.3 容器内连线裁剪
 
-容器内的连线通过裁剪区域绘制，确保连线不会溢出容器边界。这避免了：
-- 连线在容器外绘制导致的视觉混乱
-- 容器边框与连线叠加导致的闪烁
-
-同时，全局连线绘制阶段跳过同一容器内的连线，避免重复绘制和 ZOrder 错乱。
+容器内的连线通过裁剪区域绘制，连线不会溢出容器边界，避免了视觉混乱和闪烁。全局连线绘制阶段跳过同一容器内的连线，避免重复绘制和 ZOrder 错乱。
 
 ### 7.4 HitTest 精度控制
 
 所有 HitTest 操作都考虑了缩放因子：
 
-- **图形命中**：使用世界坐标直接测试
-- **连线命中**：tolerance 参数为 `6f / _zoom`，在放大时提高精度，缩小时降低精度
-- **ResizeHandle 命中**：tolerance 参数为 `8f / _zoom`，同样适应缩放
+- **图形命中**：使用世界坐标直接测试。
+- **连线命中**：tolerance 参数为 `6f / _zoom`，在放大时提高精度，缩小时降低精度。
+- **ResizeHandle 命中**：tolerance 参数为 `8f / _zoom`，同样适应缩放。
 
 `ShapeBase.HitTest` 会先检查 `Visible` 属性，不可见的图形不参与命中测试。
 
@@ -359,25 +211,11 @@ if (_menuViewGrid != null)
 - `DrawingCanvas.Zoom`：限制在 `[0.1f, 5.0f]` 范围内
 - `GraphicsUtility.CreateRoundedRectPath`：radius 自动钳制不超过 width/height 的一半
 - `ResizeHandle` 调整：最终尺寸不低于 MinWidth/MinHeight
-- `GenericShape.Name` / `Description`：null 值自动替换为空字符串
-- `Connection.Label`：null 值自动替换为空字符串
+- `GenericShape.Name` / `Description`、`Connection.Label`：null 值自动替换为空字符串
 
 ### 7.6 反序列化异常处理
 
-`XmlShapeSerializer.ConvertFromData` 中对枚举解析使用了 try-catch 回退：
-
-```csharp
-try
-{
-    conn.Mode = (ConnectionMode)Enum.Parse(typeof(ConnectionMode), cd.Mode);
-}
-catch
-{
-    conn.Mode = ConnectionMode.Straight;  // 回退到默认值
-}
-```
-
-`ConnectionMode` 和 `DashStyle` 均有此保护，确保即使 XML 数据损坏或版本不匹配，也不会导致反序列化失败。
+`XmlShapeSerializer.ConvertFromData` 中对枚举解析使用了 try-catch 回退。`ConnectionMode` 和 `DashStyle` 均有此保护，即使 XML 数据损坏或版本不匹配，也不会导致反序列化失败。
 
 ### 7.7 事件触发安全
 
@@ -399,113 +237,45 @@ protected void NotifyChanged()
 
 ### 8.1 PropertyGrid 集成
 
-DiagramEditor 内嵌 `PropertyGrid` 控件，选中图形时自动显示其属性。所有公开属性均使用 C# 特性标注，在 PropertyGrid 中提供友好的分类和描述：
-
-**ShapeBase 属性特性示例**：
-```csharp
-[Category("外观")]
-[DisplayName("填充颜色")]
-public Color FillColor { ... }
-
-[Category("布局")]
-[DisplayName("X")]
-public float X { ... }
-
-[Category("行为")]
-[DisplayName("可调整大小")]
-[Description("是否允许通过拖拽手柄调整尺寸")]
-public bool Resizable { ... }
-```
-
-**GlobalConfig 属性特性**：
-```csharp
-[Category("连线")]
-[DisplayName("默认连线模式")]
-public ConnectionMode DefaultConnectionMode { ... }
-
-[Category("画布")]
-[DisplayName("主题")]
-[Description("编辑器配色主题")]
-public EditorTheme Theme { ... }
-```
-
-PropertyGrid 设置为 `PropertySort.CategorizedAlphabetical`，按分类字母序排列。
+DiagramEditor 内嵌 `PropertyGrid` 控件，选中图形时自动显示其属性。所有公开属性均使用 C# 特性标注（`[Category]`、`[DisplayName]`、`[Description]`），在 PropertyGrid 中提供友好的分类和描述。PropertyGrid 设置为 `PropertySort.CategorizedAlphabetical`，按分类字母序排列。
 
 ### 8.2 工具提示
 
-所有工具栏按钮设置了 `ToolTipText`：
-
-| 按钮 | 提示文本 |
-|------|----------|
-| 选择工具 | "选择工具 (V)" |
-| 连线工具 | "连线工具 (L)" |
-| 直线模式 | "直线模式" |
-| 曲线模式 | "曲线模式" |
-| 折线模式 | "折线模式" |
-| 放大 | "放大 (+)" |
-| 缩小 | "缩小 (-)" |
-| 重置视图 | "重置视图" |
-| 置顶 | "置于顶层" |
-| 置底 | "置于底层" |
-| 删除 | "删除选中 (Delete)" |
+所有工具栏按钮设置了 `ToolTipText`，提供快捷键提示（如 "选择工具 (V)"、"连线工具 (L)"、"删除选中 (Delete)"）。
 
 ### 8.3 工具栏图标/文字切换
 
-DiagramEditor 提供 `ShowToolbarText` 属性控制工具栏显示模式：
-
-- `false`（默认）：仅显示图标（`ToolStripItemDisplayStyle.Image`）
-- `true`：同时显示图标和文字（`ToolStripItemDisplayStyle.ImageAndText`）
-
-可通过属性面板或视图菜单中的"工具栏文字"选项切换。`ApplyToolbarRenderMode` 方法统一更新所有工具栏按钮的 DisplayStyle。
+DiagramEditor 提供 `ShowToolbarText` 属性控制工具栏显示模式：默认仅显示图标，设为 true 时同时显示图标和文字。可通过属性面板或视图菜单切换。
 
 ### 8.4 上下文感知菜单
 
-**菜单可用性动态更新**（`UpdateMenuAvailability`）：
-
-根据当前选中状态动态启用/禁用菜单项：
+**菜单可用性动态更新**（`UpdateMenuAvailability`）根据当前选中状态动态启用/禁用菜单项：
 
 | 菜单项 | 启用条件 |
 |--------|----------|
-| 删除（编辑菜单） | 有选中的图形或连线 |
-| 置顶/置底（图形菜单） | 有选中的图形 |
-| 添加成员（图形菜单） | 选中单个 GenericShape 且其 ShapeType.SupportsMembers=true |
-| 切换状态（图形菜单） | 选中单个 GenericShape 且有 2 个以上 State |
+| 删除 | 有选中的图形或连线 |
+| 置顶/置底 | 有选中的图形 |
+| 添加成员 | 选中单个 GenericShape 且其 ShapeType.SupportsMembers=true |
+| 切换状态 | 选中单个 GenericShape 且有 2 个以上 State |
 
-**右键上下文菜单**（`ShowCanvasContextMenu`）：
-
-根据上下文动态构建菜单内容：
-- 选中单个支持成员的 GenericShape → 显示"添加成员"/"切换状态"
-- 始终显示"删除"
-- 选中多个图形 → 显示"置顶"/"置底"
-- 始终显示"属性..."
+**右键上下文菜单**（`ShowCanvasContextMenu`）根据上下文动态构建菜单内容，选中单个支持成员的图形时显示"添加成员"/"切换状态"，选中多个图形时显示"置顶"/"置底"，始终显示"删除"和"属性..."。
 
 ### 8.5 键盘快捷键
 
-| 快捷键 | 功能 | 实现位置 |
-|--------|------|----------|
-| `Delete` | 删除选中 | DrawingCanvas.OnKeyDown |
-| `Escape` | 取消操作、切换到选择工具 | DrawingCanvas.OnKeyDown |
-| `Ctrl+A` | 全选 | DrawingCanvas.OnKeyDown |
-| `Ctrl+O` | 打开文件 | DiagramEditor.Commands → OnFileOpen（菜单快捷键） |
-| `Ctrl+S` | 保存文件 | DiagramEditor.Commands → OnFileSave（菜单快捷键） |
-| 鼠标中键拖动 | 平移画布 | DrawingCanvas.OnMouseDown/OnMouseMove |
-| 鼠标滚轮 | 缩放画布（以鼠标位置为中心） | DrawingCanvas.OnMouseWheel |
+| 快捷键 | 功能 |
+|--------|------|
+| `Delete` | 删除选中 |
+| `Escape` | 取消操作、切换到选择工具 |
+| `Ctrl+A` | 全选 |
+| `Ctrl+O` | 打开文件 |
+| `Ctrl+S` | 保存文件 |
+| 鼠标中键拖动 | 平移画布 |
+| 鼠标滚轮 | 缩放画布（以鼠标位置为中心） |
 
 ### 8.6 状态栏信息反馈
 
-状态栏实时显示以下信息：
-- **左侧状态标签**：操作提示（"就绪"、"新建文档"、"已保存: ..."/"已打开: ..."、选中统计 "选中: N 个实体, M 条连线"）
-- **右侧标签**：缩放比例和鼠标世界坐标（"缩放: 100% | 坐标: (x, y)"）
-
-坐标显示跟随鼠标移动实时更新，缩放显示在每次缩放操作后更新。
+状态栏实时显示操作提示（"就绪"、"新建文档"、选中统计等）和缩放比例、鼠标世界坐标。坐标显示跟随鼠标移动实时更新，缩放显示在每次缩放操作后更新。
 
 ### 8.7 工具箱拖放创建
 
-用户可以直接从工具箱拖动图形类型到画布上创建图形实例：
-
-1. 在工具箱中按下鼠标 → `OnMouseDown` 启动 `DoDragDrop`
-2. 拖动到画布上方 → `OnDragOver` 返回 `DragDropEffects.Copy`
-3. 释放鼠标 → `OnDragDrop` 通过 `ToolboxItem.CreateShape()` 创建实例
-4. 新图形放置在鼠标位置中心，如开启网格吸附则对齐到网格
-5. 自动检测是否落入容器，若在容器 body 区域内则自动设为容器子元素
-6. 新图形自动选中，旧选中清除
+用户可以直接从工具箱拖动图形类型到画布上创建图形实例。新图形放置在鼠标位置中心，如开启网格吸附则对齐到网格。自动检测是否落入容器，若在容器 body 区域内则自动设为容器子元素。新图形自动选中，旧选中清除。

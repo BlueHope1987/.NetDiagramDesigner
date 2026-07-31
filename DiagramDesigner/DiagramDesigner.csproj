@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="2.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{B1C2D3E4-F5A6-7890-ABCD-EF1234567890}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <AppDesignerFolder>Properties</AppDesignerFolder>
+    <RootNamespace>DiagramDesigner</RootNamespace>
+    <AssemblyName>DiagramDesigner</AssemblyName>
+    <TargetFrameworkVersion>v2.0</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Xml" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Core\XmlColor.cs" />
+    <Compile Include="Core\RenderCommand.cs" />
+    <Compile Include="Core\ShapeMember.cs" />
+    <Compile Include="Core\ShapeMemberParameter.cs" />
+    <Compile Include="Core\ShapeState.cs" />
+    <Compile Include="Core\ShapeType.cs" />
+    <Compile Include="Core\ShapeTypeRegistry.cs" />
+    <Compile Include="Core\ShapeBase.cs" />
+    <Compile Include="Core\Connection.cs" />
+    <Compile Include="Core\DrawingDocument.cs" />
+    <Compile Include="Core\GraphicsUtility.cs" />
+    <Compile Include="Core\ShapeLibrary.cs" />
+    <Compile Include="Core\ShapeComposer.cs" />
+    <Compile Include="Core\ShapeAction.cs" />
+    <Compile Include="Core\CanvasConfig.cs" />
+    <Compile Include="Core\EditorEvents.cs" />
+    <Compile Include="Config\GlobalConfig.cs" />
+    <Compile Include="Controls\ToolboxPanel.cs" />
+    <Compile Include="Controls\ToolboxConfigDialog.cs" />
+    <Compile Include="Controls\CustomShapeDialog.cs" />
+    <Compile Include="Controls\ShapeActionEditDialog.cs" />
+    <Compile Include="Controls\DrawingCanvas.cs" />
+    <Compile Include="Controls\DrawingCanvas.Rendering.cs" />
+    <Compile Include="Controls\DiagramEditor.cs" />
+    <Compile Include="Controls\DiagramEditor.Commands.cs" />
+    <Compile Include="Shapes\GenericShape.cs" />
+    <Compile Include="Shapes\ContainerShape.cs" />
+    <Compile Include="Serialization\DocumentData.cs" />
+    <Compile Include="Serialization\XmlShapeSerializer.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Icons\cursor.png" />
+    <EmbeddedResource Include="Icons\connect.png" />
+    <EmbeddedResource Include="Icons\line_straight.png" />
+    <EmbeddedResource Include="Icons\line_curve.png" />
+    <EmbeddedResource Include="Icons\line_ortho.png" />
+    <EmbeddedResource Include="Icons\zoom_in.png" />
+    <EmbeddedResource Include="Icons\zoom_out.png" />
+    <EmbeddedResource Include="Icons\fit_view.png" />
+    <EmbeddedResource Include="Icons\to_front.png" />
+    <EmbeddedResource Include="Icons\to_back.png" />
+    <EmbeddedResource Include="Icons\delete.png" />
+    <EmbeddedResource Include="Icons\properties.png" />
+    <EmbeddedResource Include="Icons\grid.png" />
+    <EmbeddedResource Include="Icons\snap.png" />
+    <EmbeddedResource Include="Icons\eye.png" />
+    <EmbeddedResource Include="Icons\sun.png" />
+    <EmbeddedResource Include="Icons\moon.png" />
+    <EmbeddedResource Include="Icons\new_doc.png" />
+    <EmbeddedResource Include="Icons\open.png" />
+    <EmbeddedResource Include="Icons\save.png" />
+    <EmbeddedResource Include="Icons\exit.png" />
+    <EmbeddedResource Include="Icons\edit.png" />
+    <EmbeddedResource Include="Icons\select_all.png" />
+    <EmbeddedResource Include="Icons\toolbar.png" />
+    <EmbeddedResource Include="Icons\toolbox.png" />
+    <EmbeddedResource Include="Icons\statusbar.png" />
+    <EmbeddedResource Include="Icons\menu_text.png" />
+    <EmbeddedResource Include="Icons\add_member.png" />
+    <EmbeddedResource Include="Icons\switch_state.png" />
+  </ItemGroup>
+  <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
+</Project>
