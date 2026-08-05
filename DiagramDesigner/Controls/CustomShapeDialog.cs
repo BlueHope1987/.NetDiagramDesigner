@@ -63,6 +63,9 @@ namespace DiagramDesigner.Controls
         /// <summary>当前正在编辑的状态索引，-1 表示无选择</summary>
         private int _editingStateIndex = -1;
 
+        /// <summary>抑制状态列表 SelectedIndexChanged 事件的标志，用于 RefreshStateList 期间避免事件级联</summary>
+        private bool _suppressStateChange = false;
+
         // === 行为选项卡 ===
         private ListBox _listActions;
         private Button _btnAddAction;
@@ -131,6 +134,16 @@ namespace DiagramDesigner.Controls
                 defaultState.CustomRenderCommands = BuildDefaultTriangleCommands();
                 _states.Add(defaultState);
                 RefreshStateList();
+            }
+
+            // 初始加载第一个状态到编辑器（抑制事件，手动加载）
+            if (_listStates.Items.Count > 0)
+            {
+                _suppressStateChange = true;
+                _listStates.SelectedIndex = 0;
+                _suppressStateChange = false;
+                _editingStateIndex = 0;
+                LoadStateToEditor(0);
             }
 
             UpdateStateButtons();
@@ -518,28 +531,44 @@ namespace DiagramDesigner.Controls
 
         private void RefreshStateList()
         {
-            int prevSel = _listStates.SelectedIndex;
-            _listStates.Items.Clear();
-            foreach (ShapeState state in _states)
-                _listStates.Items.Add(state.Name);
-            if (prevSel >= 0 && prevSel < _listStates.Items.Count)
-                _listStates.SelectedIndex = prevSel;
-            else if (_listStates.Items.Count > 0 && _editingStateIndex < 0)
-                _listStates.SelectedIndex = 0;
+            // 抑制 SelectedIndexChanged 事件，避免 Items.Clear / SetSelected 期间的事件级联
+            _suppressStateChange = true;
+            try
+            {
+                int prevSel = _listStates.SelectedIndex;
+                _listStates.Items.Clear();
+                foreach (ShapeState state in _states)
+                    _listStates.Items.Add(state.Name);
+                if (prevSel >= 0 && prevSel < _listStates.Items.Count)
+                    _listStates.SelectedIndex = prevSel;
+                else if (_listStates.Items.Count > 0)
+                    _listStates.SelectedIndex = 0;
+            }
+            finally
+            {
+                _suppressStateChange = false;
+            }
             UpdateStateButtons();
         }
 
         /// <summary>
         /// 状态列表选择变化时，先将当前编辑保存回状态，再加载新选中状态的数据到编辑器。
+        /// 在 RefreshStateList 期间通过 _suppressStateChange 标志抑制此处理器，避免事件级联。
         /// </summary>
         private void OnStateListSelectedIndexChanged(object sender, EventArgs e)
         {
-            // 先保存当前编辑状态
-            SaveCurrentEditorToState();
+            if (_suppressStateChange)
+                return;
 
-            int idx = _listStates.SelectedIndex;
-            _editingStateIndex = idx;
-            LoadStateToEditor(idx);
+            int oldIdx = _editingStateIndex;
+            int newIdx = _listStates.SelectedIndex;
+
+            // 仅当索引实际变化时才保存旧状态，避免无谓覆写
+            if (oldIdx != newIdx && oldIdx >= 0 && oldIdx < _states.Count)
+                SaveCurrentEditorToState();
+
+            _editingStateIndex = newIdx;
+            LoadStateToEditor(newIdx);
             UpdateStateButtons();
         }
 
@@ -637,6 +666,7 @@ namespace DiagramDesigner.Controls
 
             UpdateColorButtons();
             UpdateGeometryVisibility();
+            _canvasPanel.Invalidate();
         }
 
         private void UpdateStateButtons()
@@ -687,7 +717,15 @@ namespace DiagramDesigner.Controls
             newState.CustomRenderCommands = new List<RenderCommand>();
             _states.Add(newState);
             RefreshStateList();
-            _listStates.SelectedIndex = _states.Count - 1;
+
+            // 选中新状态并加载到编辑器（抑制事件，避免处理器用旧索引保存到错误状态）
+            int newIdx = _states.Count - 1;
+            _suppressStateChange = true;
+            _listStates.SelectedIndex = newIdx;
+            _suppressStateChange = false;
+            _editingStateIndex = newIdx;
+            LoadStateToEditor(newIdx);
+            UpdateStateButtons();
         }
 
         private void OnCopyState(object sender, EventArgs e)
@@ -701,7 +739,14 @@ namespace DiagramDesigner.Controls
             copy.Name = _states[idx].Name + "_副本";
             _states.Add(copy);
             RefreshStateList();
-            _listStates.SelectedIndex = _states.Count - 1;
+
+            int newIdx = _states.Count - 1;
+            _suppressStateChange = true;
+            _listStates.SelectedIndex = newIdx;
+            _suppressStateChange = false;
+            _editingStateIndex = newIdx;
+            LoadStateToEditor(newIdx);
+            UpdateStateButtons();
         }
 
         private void OnSetAsDefault(object sender, EventArgs e)
@@ -733,7 +778,14 @@ namespace DiagramDesigner.Controls
             _states.Insert(0, sel);
 
             RefreshStateList();
+
+            // 状态已重排序，必须抑制事件，否则处理器会用旧 _editingStateIndex 保存到错误状态
+            _suppressStateChange = true;
             _listStates.SelectedIndex = 0;
+            _suppressStateChange = false;
+            _editingStateIndex = 0;
+            LoadStateToEditor(0);
+            UpdateStateButtons();
         }
 
         private void OnDeleteState(object sender, EventArgs e)
@@ -761,7 +813,15 @@ namespace DiagramDesigner.Controls
                 _editingStateIndex = -1;
                 RefreshStateList();
                 if (_listStates.Items.Count > 0)
-                    _listStates.SelectedIndex = Math.Min(idx, _listStates.Items.Count - 1);
+                {
+                    int newIdx = Math.Min(idx, _listStates.Items.Count - 1);
+                    _suppressStateChange = true;
+                    _listStates.SelectedIndex = newIdx;
+                    _suppressStateChange = false;
+                    _editingStateIndex = newIdx;
+                    LoadStateToEditor(newIdx);
+                }
+                UpdateStateButtons();
             }
         }
 

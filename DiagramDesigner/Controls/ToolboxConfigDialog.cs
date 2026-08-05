@@ -19,6 +19,8 @@ namespace DiagramDesigner.Controls
         private Button _btnAddCustom;
         private Button _btnEdit;
         private Button _btnDelete;
+        private Button _btnEnableAll;
+        private Button _btnDisableAll;
         private Button _btnOk;
         private Button _btnCancel;
         private List<ToolboxItem> _workingItems;
@@ -84,9 +86,23 @@ namespace DiagramDesigner.Controls
             _btnDelete.Click += new EventHandler(OnDeleteCustom);
             this.Controls.Add(_btnDelete);
 
+            _btnEnableAll = new Button();
+            _btnEnableAll.Text = "全部启用";
+            _btnEnableAll.Location = new Point(340, 192);
+            _btnEnableAll.Size = new Size(110, 28);
+            _btnEnableAll.Click += new EventHandler(OnEnableAll);
+            this.Controls.Add(_btnEnableAll);
+
+            _btnDisableAll = new Button();
+            _btnDisableAll.Text = "全部禁用";
+            _btnDisableAll.Location = new Point(340, 226);
+            _btnDisableAll.Size = new Size(110, 28);
+            _btnDisableAll.Click += new EventHandler(OnDisableAll);
+            this.Controls.Add(_btnDisableAll);
+
             Label lblHint = new Label();
             lblHint.Text = "提示：\n· 勾选 = 启用\n· 双击自定义项可编辑\n· 仅自定义工具可编辑删除";
-            lblHint.Location = new Point(340, 196);
+            lblHint.Location = new Point(340, 264);
             lblHint.Size = new Size(110, 80);
             lblHint.ForeColor = Color.FromArgb(100, 100, 100);
             this.Controls.Add(lblHint);
@@ -293,6 +309,20 @@ namespace DiagramDesigner.Controls
                 _listTools.Items.RemoveAt(idx);
                 OnListSelectedIndexChanged(null, null);
             }
+        }
+
+        /// <summary>将列表中所有工具项设为启用</summary>
+        private void OnEnableAll(object sender, EventArgs e)
+        {
+            for (int i = 0; i < _listTools.Items.Count; i++)
+                _listTools.SetItemChecked(i, true);
+        }
+
+        /// <summary>将列表中所有工具项设为禁用</summary>
+        private void OnDisableAll(object sender, EventArgs e)
+        {
+            for (int i = 0; i < _listTools.Items.Count; i++)
+                _listTools.SetItemChecked(i, false);
         }
 
         protected override void OnClosed(EventArgs e)
