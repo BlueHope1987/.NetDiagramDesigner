@@ -356,6 +356,7 @@ namespace DiagramDesigner.Controls
             _canvas.MouseMove += new MouseEventHandler(OnCanvasMouseMove);
             _canvas.MouseDown += new MouseEventHandler(OnCanvasMouseDown);
             _propertyGrid.PropertyValueChanged += new PropertyValueChangedEventHandler(OnPropertyValueChanged);
+            _toolbox.ToolboxChanged += new EventHandler(OnToolboxChanged);
 
             // 工具栏按钮事件绑定
             _btnSelect.Click += new EventHandler(OnSelectTool);
@@ -1102,6 +1103,16 @@ namespace DiagramDesigner.Controls
                 ApplyCanvasConfig(_canvas.Config);
             }
             _canvas.Invalidate();
+        }
+
+        /// <summary>
+        /// 工具箱变更（添加/删除/配置工具）时，将当前可见性状态同步到画布配置。
+        /// 确保 ApplyCanvasConfig 重新加载工具箱后能正确恢复可见性。
+        /// </summary>
+        private void OnToolboxChanged(object sender, EventArgs e)
+        {
+            if (_canvas.Config != null)
+                _canvas.Config.VisibleToolNames = _toolbox.GetVisibleNames();
         }
     }
 

@@ -26,7 +26,7 @@ namespace DiagramDesigner.Core
         private bool _designMode = true;
         private List<string> _enabledToolNames = new List<string>();
         private List<string> _shapeTypeNames = new List<string>();
-        private List<string> _visibleToolNames = new List<string>();
+        private List<string> _visibleToolNames = null;
         private List<ShapeType> _customShapeTypes = new List<ShapeType>();
 
         [Category("面板")]
@@ -126,7 +126,7 @@ namespace DiagramDesigner.Core
         }
 
         [Category("图形")]
-        [Description("工具箱中可见的图形类型名列表（空或 null 表示全部显示）")]
+        [Description("工具箱中可见的图形类型名列表（null 表示全部显示，空列表表示全部禁用）")]
         public List<string> VisibleToolNames
         {
             get { return _visibleToolNames; }

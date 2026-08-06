@@ -60,6 +60,13 @@ namespace DiagramDesigner.Controls
         private bool _designMode = true;
 
         /// <summary>
+        /// 标记是否已显式应用过可见性过滤。
+        /// false 表示未配置（全部显示），true 表示已配置（按 VisibleToolNames 过滤）。
+        /// 用于区分"未配置"和"全部禁用"两种空列表场景。
+        /// </summary>
+        private bool _visibilityFilterApplied = false;
+
+        /// <summary>
         /// 设计模式。false 时禁用工具箱编辑相关功能。
         /// 注意：使用 new 关键字显式隐藏 Component.DesignMode。
         /// </summary>
@@ -94,6 +101,11 @@ namespace DiagramDesigner.Controls
 
         public void ReloadFromRegistry()
         {
+            // 保留当前可见性状态，以便重建后恢复
+            List<string> prevVisible = null;
+            if (_visibilityFilterApplied)
+                prevVisible = GetVisibleNames();
+
             _items.Clear();
             _selectedItem = null;
 
@@ -112,6 +124,10 @@ namespace DiagramDesigner.Controls
                 }
             }
 
+            // 重建后恢复之前的可见性过滤
+            if (prevVisible != null)
+                ApplyVisibilityFilter(prevVisible);
+
             int totalHeight = CalculateContentHeight();
             this.AutoScrollMinSize = new Size(0, totalHeight);
             this.Invalidate(true);
@@ -119,20 +135,24 @@ namespace DiagramDesigner.Controls
         }
 
         /// <summary>
-        /// 根据可见图形名列表过滤工具箱显示
+        /// 根据可见图形名列表过滤工具箱显示。
+        /// null 表示未配置过滤（全部显示）；非 null 列表（包括空列表）表示已配置过滤。
         /// </summary>
         public void ApplyVisibilityFilter(List<string> visibleNames)
         {
-            if (visibleNames == null || visibleNames.Count == 0)
+            if (visibleNames == null)
             {
-                // 空/null 表示全部显示
+                // null 表示未配置，全部显示
                 foreach (ToolboxItem item in _items)
                     item.Visible = true;
+                _visibilityFilterApplied = false;
             }
             else
             {
+                // 非 null 列表（含空列表）表示已配置，按列表过滤
                 foreach (ToolboxItem item in _items)
                     item.Visible = visibleNames.Contains(item.Name);
+                _visibilityFilterApplied = true;
             }
             int totalHeight = CalculateContentHeight();
             this.AutoScrollMinSize = new Size(0, totalHeight);
@@ -363,6 +383,7 @@ namespace DiagramDesigner.Controls
                 if (_selectedItem == _contextTarget)
                     _selectedItem = null;
                 _contextTarget = null;
+                _visibilityFilterApplied = true; // 用户已显式配置可见性
                 int totalHeight = CalculateContentHeight();
                 this.AutoScrollMinSize = new Size(0, totalHeight);
                 this.Invalidate(true);
@@ -386,6 +407,7 @@ namespace DiagramDesigner.Controls
                     }
                     if (!_items.Contains(_selectedItem))
                         _selectedItem = null;
+                    _visibilityFilterApplied = true; // 用户已显式配置可见性
                     int totalHeight = CalculateContentHeight();
                     this.AutoScrollMinSize = new Size(0, totalHeight);
                     this.Invalidate(true);
