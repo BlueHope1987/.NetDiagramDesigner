@@ -6,6 +6,12 @@ using DiagramDesigner.Core;
 
 namespace DiagramDesigner.Shapes
 {
+    /// <summary>
+    /// 通用图形类。支持 ShapeType 定义的渲染指令、多状态切换、
+    /// 成员列表以及 Zone 分区布局。
+    /// 每个 GenericShape 实例从 ShapeType 复制一份 Zone 定义，
+    /// 并可在运行时通过状态的 CustomZones 进行覆盖。
+    /// </summary>
     [Serializable]
     public class GenericShape : ShapeBase
     {
@@ -15,6 +21,9 @@ namespace DiagramDesigner.Shapes
         private string _currentStateName = "Normal";
         private float _memberAreaTop = 0.35f;
         private float _memberLineHeight = 16f;
+        private List<ShapeZone> _zones = new List<ShapeZone>();
+        private float _refWidth = 140f;
+        private float _refHeight = 100f;
 
         public string ShapeTypeName
         {
@@ -49,6 +58,30 @@ namespace DiagramDesigner.Shapes
         {
             get { return _memberAreaTop; }
             set { _memberAreaTop = value; NotifyChanged(); }
+        }
+
+        /// <summary>
+        /// 该图形实例的 Zone 列表。从 ShapeType 复制而来，
+        /// 可在运行时被状态的 CustomZones 覆盖。
+        /// </summary>
+        public List<ShapeZone> Zones
+        {
+            get { return _zones; }
+            set { _zones = value; NotifyChanged(); }
+        }
+
+        /// <summary>Zone 冻结缩放的参考宽度（通常为创建时的默认宽度）</summary>
+        public float RefWidth
+        {
+            get { return _refWidth; }
+            set { _refWidth = value; }
+        }
+
+        /// <summary>Zone 冻结缩放的参考高度（通常为创建时的默认高度）</summary>
+        public float RefHeight
+        {
+            get { return _refHeight; }
+            set { _refHeight = value; }
         }
 
         public GenericShape()
@@ -99,10 +132,79 @@ namespace DiagramDesigner.Shapes
             }
         }
 
+        /// <summary>
+        /// 获取当前生效的 Zone 列表。
+        /// 优先使用当前状态的 CustomZones，其次使用实例自身的 Zones，
+        /// 最后回退到 ShapeType 的 Zones。
+        /// </summary>
+        private List<ShapeZone> GetEffectiveZones()
+        {
+            ShapeState currentState = GetCurrentState();
+            if (currentState != null && currentState.CustomZones != null
+                && currentState.CustomZones.Count > 0)
+            {
+                return currentState.CustomZones;
+            }
+
+            if (_zones != null && _zones.Count > 0)
+                return _zones;
+
+            ShapeType type = ShapeTypeRegistry.Instance.GetShapeType(_shapeTypeName);
+            if (type != null && type.Zones != null && type.Zones.Count > 0)
+            {
+                type.EnsureDefaultZones();
+                return type.Zones;
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// 计算 Zone 在图形边界内的绝对矩形。
+        /// Freeze 缩放的 Zone 使用参考尺寸（固定像素），
+        /// 非 Freeze 的 Zone 使用相对尺寸（随图形缩放）。
+        /// </summary>
+        private RectangleF GetZoneBounds(ShapeZone zone)
+        {
+            float absW, absH;
+
+            if (zone.Scaling == ZoneScaling.Freeze)
+            {
+                absW = zone.Width * _refWidth;
+                absH = zone.Height * _refHeight;
+            }
+            else
+            {
+                absW = zone.Width * Bounds.Width;
+                absH = zone.Height * Bounds.Height;
+            }
+
+            float absX = Bounds.X + zone.X * Bounds.Width;
+            float absY = Bounds.Y + zone.Y * Bounds.Height;
+
+            return new RectangleF(absX, absY, absW, absH);
+        }
+
+        /// <summary>查找指定类型的 Zone</summary>
+        private ShapeZone FindZone(List<ShapeZone> zones, bool isTitle)
+        {
+            if (zones == null)
+                return null;
+            foreach (ShapeZone z in zones)
+            {
+                if (isTitle && z.IsTitleZone)
+                    return z;
+                if (!isTitle && z.IsMemberZone)
+                    return z;
+            }
+            return null;
+        }
+
         public override void Draw(Graphics g, float scale)
         {
             ShapeType type = ShapeTypeRegistry.Instance.GetShapeType(_shapeTypeName);
             ShapeColors colors = ComputeGradientColors();
+            List<ShapeZone> effectiveZones = GetEffectiveZones();
 
             // 优先使用当前状态的自定义绘制指令
             List<RenderCommand> commands = null;
@@ -118,6 +220,7 @@ namespace DiagramDesigner.Shapes
                 commands = type.RenderCommands;
             }
 
+            // 1. 渲染图形主体
             if (commands != null && commands.Count > 0)
             {
                 foreach (RenderCommand cmd in commands)
@@ -130,8 +233,41 @@ namespace DiagramDesigner.Shapes
                 DrawFallback(g, colors, scale);
             }
 
-            DrawName(g, scale);
-            DrawMembers(g, scale);
+            // 2. 渲染 Zone 边框和 Zone 内绘制指令
+            if (effectiveZones != null)
+            {
+                foreach (ShapeZone zone in effectiveZones)
+                {
+                    RectangleF zoneRect = GetZoneBounds(zone);
+
+                    // Zone 边框
+                    if (zone.ShowBorder)
+                    {
+                        using (Pen pen = new Pen(zone.BorderColor.ToColor(), 0.5f / scale))
+                        {
+                            pen.DashStyle = DashStyle.Dash;
+                            g.DrawRectangle(pen, zoneRect.X, zoneRect.Y, zoneRect.Width, zoneRect.Height);
+                        }
+                    }
+
+                    // Zone 内绘制指令
+                    if (zone.RenderCommands != null && zone.RenderCommands.Count > 0)
+                    {
+                        foreach (RenderCommand cmd in zone.RenderCommands)
+                        {
+                            cmd.Execute(g, zoneRect, colors, scale);
+                        }
+                    }
+                }
+            }
+
+            // 3. 渲染标题（使用 Title Zone 或回退到旧逻辑）
+            DrawName(g, scale, effectiveZones);
+
+            // 4. 渲染成员列表（使用 Member Zone 或回退到旧逻辑）
+            DrawMembers(g, scale, effectiveZones);
+
+            // 5. 渲染选中状态
             DrawSelection(g, scale);
         }
 
@@ -176,7 +312,11 @@ namespace DiagramDesigner.Shapes
             }
         }
 
-        private void DrawName(Graphics g, float scale)
+        /// <summary>
+        /// 绘制图形名称。优先使用 Title Zone 的边界，
+        /// 若无 Zone 则回退到基于 MemberAreaTop 的旧逻辑。
+        /// </summary>
+        private void DrawName(Graphics g, float scale, List<ShapeZone> zones)
         {
             if (string.IsNullOrEmpty(Name))
                 return;
@@ -189,14 +329,23 @@ namespace DiagramDesigner.Shapes
                 StringFormat sf = new StringFormat();
                 sf.Trimming = StringTrimming.EllipsisCharacter;
 
-                RectangleF textRect = Bounds;
-                textRect.Inflate(-6 / scale, -6 / scale);
-
+                RectangleF textRect;
                 bool hasMembers = (_members != null && _members.Count > 0);
 
-                if (hasMembers)
+                // 优先使用 Title Zone
+                ShapeZone titleZone = FindZone(zones, true);
+                if (titleZone != null)
                 {
-                    textRect.Height = Bounds.Height * _memberAreaTop;
+                    textRect = GetZoneBounds(titleZone);
+                    textRect.Inflate(-6 / scale, -4 / scale);
+                }
+                else
+                {
+                    // 回退到旧逻辑
+                    textRect = Bounds;
+                    textRect.Inflate(-6 / scale, -6 / scale);
+                    if (hasMembers)
+                        textRect.Height = Bounds.Height * _memberAreaTop;
                 }
 
                 // 根据 ShapeType 的名称对齐方式调整
@@ -227,33 +376,63 @@ namespace DiagramDesigner.Shapes
             }
         }
 
-        private void DrawMembers(Graphics g, float scale)
+        /// <summary>
+        /// 绘制成员列表。优先使用 Member Zone 的边界，
+        /// 若无 Zone 则回退到基于 MemberAreaTop 的旧逻辑。
+        /// </summary>
+        private void DrawMembers(Graphics g, float scale, List<ShapeZone> zones)
         {
             if (_members == null || _members.Count == 0)
                 return;
 
-            float top = Bounds.Y + Bounds.Height * _memberAreaTop;
-            float left = Bounds.X + 4 / scale;
-            float width = Bounds.Width - 8 / scale;
+            float top, left;
             float lineHeight = _memberLineHeight / scale;
+
+            // 优先使用 Member Zone
+            ShapeZone memberZone = FindZone(zones, false);
+            if (memberZone != null)
+            {
+                RectangleF zoneRect = GetZoneBounds(memberZone);
+                top = zoneRect.Y + 2 / scale;
+                left = zoneRect.X + 4 / scale;
+
+                // 成员区分隔线
+                using (Pen pen = new Pen(Color.FromArgb(200, 200, 200), 0.5f / scale))
+                {
+                    g.DrawLine(pen, zoneRect.X, zoneRect.Y, zoneRect.Right, zoneRect.Y);
+                }
+            }
+            else
+            {
+                // 回退到旧逻辑
+                top = Bounds.Y + Bounds.Height * _memberAreaTop;
+                left = Bounds.X + 4 / scale;
+
+                using (Pen pen = new Pen(Color.FromArgb(200, 200, 200), 0.5f / scale))
+                {
+                    g.DrawLine(pen, Bounds.X, top, Bounds.Right, top);
+                }
+            }
 
             using (Font font = new Font("Microsoft YaHei", 8f / scale, FontStyle.Regular))
             using (Brush brush = new SolidBrush(TextColor))
             {
+                float bottomLimit = Bounds.Bottom - 2 / scale;
+                if (memberZone != null)
+                {
+                    RectangleF zoneRect = GetZoneBounds(memberZone);
+                    bottomLimit = zoneRect.Bottom - 2 / scale;
+                }
+
                 for (int i = 0; i < _members.Count; i++)
                 {
                     float y = top + i * lineHeight;
-                    if (y + lineHeight > Bounds.Bottom - 2 / scale)
+                    if (y + lineHeight > bottomLimit)
                         break;
 
                     string sig = _members[i].GetSignature();
                     g.DrawString(sig, font, brush, left, y);
                 }
-            }
-
-            using (Pen pen = new Pen(Color.FromArgb(200, 200, 200), 0.5f / scale))
-            {
-                g.DrawLine(pen, Bounds.X, top, Bounds.Right, top);
             }
         }
 
@@ -309,7 +488,10 @@ namespace DiagramDesigner.Shapes
             clone.BorderWidth = this.BorderWidth;
             clone.CurrentStateName = this.CurrentStateName;
             clone.MemberAreaTop = this.MemberAreaTop;
+            clone.RefWidth = this.RefWidth;
+            clone.RefHeight = this.RefHeight;
 
+            // 拷贝成员
             foreach (ShapeMember m in this.Members)
             {
                 ShapeMember cm = new ShapeMember();
@@ -331,6 +513,7 @@ namespace DiagramDesigner.Shapes
                 clone.Members.Add(cm);
             }
 
+            // 拷贝状态（使用 RenderCommand.Clone）
             foreach (ShapeState s in this.States)
             {
                 ShapeState cs = new ShapeState();
@@ -344,33 +527,20 @@ namespace DiagramDesigner.Shapes
                 if (s.CustomRenderCommands != null)
                 {
                     foreach (RenderCommand rc in s.CustomRenderCommands)
-                    {
-                        RenderCommand rcCopy = new RenderCommand();
-                        rcCopy.CommandType = rc.CommandType;
-                        rcCopy.X = rc.X; rcCopy.Y = rc.Y;
-                        rcCopy.Width = rc.Width; rcCopy.Height = rc.Height;
-                        rcCopy.CornerRadius = rc.CornerRadius;
-                        rcCopy.FillColor = new XmlColor(rc.FillColor.ToColor());
-                        rcCopy.StrokeColor = new XmlColor(rc.StrokeColor.ToColor());
-                        rcCopy.StrokeWidth = rc.StrokeWidth;
-                        rcCopy.Text = rc.Text;
-                        rcCopy.TextAlign = rc.TextAlign;
-                        rcCopy.FontSize = rc.FontSize;
-                        rcCopy.IsBold = rc.IsBold;
-                        if (rc.PolygonPoints != null)
-                        {
-                            rcCopy.PolygonPoints = new PointF[rc.PolygonPoints.Length];
-                            for (int i = 0; i < rc.PolygonPoints.Length; i++)
-                                rcCopy.PolygonPoints[i] = rc.PolygonPoints[i];
-                        }
-                        rcCopy.UseShapeColors = rc.UseShapeColors;
-                        rcCopy.Fill = rc.Fill;
-                        rcCopy.Stroke = rc.Stroke;
-                        cs.CustomRenderCommands.Add(rcCopy);
-                    }
+                        cs.CustomRenderCommands.Add(rc.Clone());
+                }
+                // 拷贝状态的 CustomZones
+                if (s.CustomZones != null)
+                {
+                    foreach (ShapeZone z in s.CustomZones)
+                        cs.CustomZones.Add(z.Clone());
                 }
                 clone.States.Add(cs);
             }
+
+            // 拷贝 Zone
+            foreach (ShapeZone z in this.Zones)
+                clone.Zones.Add(z.Clone());
 
             return clone;
         }

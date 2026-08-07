@@ -15,6 +15,7 @@ namespace DiagramDesigner.Core
         private int _priority = 0;
         private List<RenderCommand> _customRenderCommands = new List<RenderCommand>();
         private bool _useCustomRenderCommands = false;
+        private List<ShapeZone> _customZones = new List<ShapeZone>();
 
         public string Name
         {
@@ -69,6 +70,16 @@ namespace DiagramDesigner.Core
         {
             get { return _useCustomRenderCommands; }
             set { _useCustomRenderCommands = value; }
+        }
+
+        /// <summary>
+        /// 该状态的自定义 Zone 列表。若不为空，则图形实例在切换到该状态时
+        /// 使用此 Zone 集合而非 ShapeType 的默认 Zone 集合。
+        /// </summary>
+        public List<ShapeZone> CustomZones
+        {
+            get { return _customZones; }
+            set { _customZones = value; }
         }
 
         public ShapeState() { }

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Globalization;
 using System.IO;
 using System.Xml.Serialization;
 using DiagramDesigner.Core;
@@ -191,6 +192,15 @@ namespace DiagramDesigner.Serialization
                 sd.ShapeTypeName = g.ShapeTypeName;
                 sd.CurrentStateName = g.CurrentStateName;
                 sd.MemberAreaTop = g.MemberAreaTop;
+                sd.RefWidth = g.RefWidth;
+                sd.RefHeight = g.RefHeight;
+
+                // 序列化图形实例的 Zone 列表
+                if (g.Zones != null)
+                {
+                    foreach (ShapeZone zone in g.Zones)
+                        sd.Zones.Add(ToZoneData(zone));
+                }
 
                 foreach (ShapeMember m in g.Members)
                 {
@@ -222,6 +232,22 @@ namespace DiagramDesigner.Serialization
                     stateData.ArgbTextColor = s.TextColor.Argb;
                     stateData.ArgbHeaderColor = s.HeaderColor.Argb;
                     stateData.Priority = s.Priority;
+                    stateData.UseCustomRenderCommands = s.UseCustomRenderCommands;
+
+                    // 序列化状态的自定义绘制指令
+                    if (s.CustomRenderCommands != null)
+                    {
+                        foreach (RenderCommand rc in s.CustomRenderCommands)
+                            stateData.CustomRenderCommands.Add(ToCommandData(rc));
+                    }
+
+                    // 序列化状态的自定义 Zone 列表（CustomZones）
+                    if (s.CustomZones != null)
+                    {
+                        foreach (ShapeZone zone in s.CustomZones)
+                            stateData.Zones.Add(ToZoneData(zone));
+                    }
+
                     sd.States.Add(stateData);
                 }
             }
@@ -247,6 +273,15 @@ namespace DiagramDesigner.Serialization
                 g.ShapeTypeName = sd.ShapeTypeName;
                 g.CurrentStateName = sd.CurrentStateName;
                 g.MemberAreaTop = sd.MemberAreaTop;
+                g.RefWidth = sd.RefWidth;
+                g.RefHeight = sd.RefHeight;
+
+                // 反序列化图形实例的 Zone 列表（向后兼容：空列表不影响加载）
+                if (sd.Zones != null)
+                {
+                    foreach (ZoneData zd in sd.Zones)
+                        g.Zones.Add(FromZoneData(zd));
+                }
 
                 foreach (MemberData md in sd.Members)
                 {
@@ -292,6 +327,22 @@ namespace DiagramDesigner.Serialization
                     s.TextColor = new XmlColor(Color.FromArgb(stateData.ArgbTextColor));
                     s.HeaderColor = new XmlColor(Color.FromArgb(stateData.ArgbHeaderColor));
                     s.Priority = stateData.Priority;
+                    s.UseCustomRenderCommands = stateData.UseCustomRenderCommands;
+
+                    // 反序列化状态的自定义绘制指令
+                    if (stateData.CustomRenderCommands != null)
+                    {
+                        foreach (RenderCommandData rcd in stateData.CustomRenderCommands)
+                            s.CustomRenderCommands.Add(FromCommandData(rcd));
+                    }
+
+                    // 反序列化状态的自定义 Zone 列表（CustomZones）
+                    if (stateData.Zones != null)
+                    {
+                        foreach (ZoneData zd in stateData.Zones)
+                            s.CustomZones.Add(FromZoneData(zd));
+                    }
+
                     g.States.Add(s);
                 }
 
@@ -310,6 +361,247 @@ namespace DiagramDesigner.Serialization
             shape.Visible = sd.Visible;
 
             return shape;
+        }
+
+        // =====================================================================
+        // RenderCommand <-> RenderCommandData 转换
+        // =====================================================================
+
+        /// <summary>将 RenderCommand 转换为可序列化的 RenderCommandData。</summary>
+        private static RenderCommandData ToCommandData(RenderCommand rc)
+        {
+            RenderCommandData rcd = new RenderCommandData();
+            rcd.CommandType = rc.CommandType.ToString();
+            rcd.X = rc.X;
+            rcd.Y = rc.Y;
+            rcd.Width = rc.Width;
+            rcd.Height = rc.Height;
+            rcd.CornerRadius = rc.CornerRadius;
+            rcd.ArgbFillColor = rc.FillColor.Argb;
+            rcd.ArgbStrokeColor = rc.StrokeColor.Argb;
+            rcd.StrokeWidth = rc.StrokeWidth;
+            rcd.Text = rc.Text;
+            rcd.TextAlign = rc.TextAlign;
+            rcd.FontSize = rc.FontSize;
+            rcd.IsBold = rc.IsBold;
+            rcd.PolygonPointsStr = PointsToString(rc.PolygonPoints);
+            rcd.MultiPathsStr = MultiPathsToString(rc.MultiPaths);
+            rcd.BoolOp = rc.BoolOp.ToString();
+            rcd.UseShapeColors = rc.UseShapeColors;
+            rcd.Fill = rc.Fill;
+            rcd.Stroke = rc.Stroke;
+            return rcd;
+        }
+
+        /// <summary>将 RenderCommandData 还原为 RenderCommand。</summary>
+        private static RenderCommand FromCommandData(RenderCommandData rcd)
+        {
+            RenderCommand rc = new RenderCommand();
+
+            try
+            {
+                rc.CommandType = (RenderCommandType)Enum.Parse(typeof(RenderCommandType), rcd.CommandType);
+            }
+            catch
+            {
+                rc.CommandType = RenderCommandType.Rectangle;
+            }
+
+            rc.X = rcd.X;
+            rc.Y = rcd.Y;
+            rc.Width = rcd.Width;
+            rc.Height = rcd.Height;
+            rc.CornerRadius = rcd.CornerRadius;
+            rc.FillColor = new XmlColor(Color.FromArgb(rcd.ArgbFillColor));
+            rc.StrokeColor = new XmlColor(Color.FromArgb(rcd.ArgbStrokeColor));
+            rc.StrokeWidth = rcd.StrokeWidth;
+            rc.Text = rcd.Text;
+            rc.TextAlign = rcd.TextAlign;
+            rc.FontSize = rcd.FontSize;
+            rc.IsBold = rcd.IsBold;
+            rc.PolygonPoints = ParsePoints(rcd.PolygonPointsStr);
+            rc.MultiPaths = ParseMultiPaths(rcd.MultiPathsStr);
+
+            try
+            {
+                rc.BoolOp = (BooleanOperation)Enum.Parse(typeof(BooleanOperation), rcd.BoolOp);
+            }
+            catch
+            {
+                rc.BoolOp = BooleanOperation.None;
+            }
+
+            rc.UseShapeColors = rcd.UseShapeColors;
+            rc.Fill = rcd.Fill;
+            rc.Stroke = rcd.Stroke;
+            return rc;
+        }
+
+        // =====================================================================
+        // ShapeZone <-> ZoneData 转换
+        // =====================================================================
+
+        /// <summary>将 ShapeZone 转换为可序列化的 ZoneData。</summary>
+        private static ZoneData ToZoneData(ShapeZone zone)
+        {
+            ZoneData zd = new ZoneData();
+            zd.Name = zone.Name;
+            zd.Layout = zone.Layout.ToString();
+            zd.Scaling = zone.Scaling.ToString();
+            zd.X = zone.X;
+            zd.Y = zone.Y;
+            zd.Width = zone.Width;
+            zd.Height = zone.Height;
+            zd.ShowBorder = zone.ShowBorder;
+            zd.ArgbBorderColor = zone.BorderColor.Argb;
+            zd.Title = zone.Title;
+            zd.IsTitleZone = zone.IsTitleZone;
+            zd.IsMemberZone = zone.IsMemberZone;
+            return zd;
+        }
+
+        /// <summary>将 ZoneData 还原为 ShapeZone。</summary>
+        private static ShapeZone FromZoneData(ZoneData zd)
+        {
+            ShapeZone zone = new ShapeZone();
+            zone.Name = zd.Name;
+
+            try
+            {
+                zone.Layout = (ZoneLayout)Enum.Parse(typeof(ZoneLayout), zd.Layout);
+            }
+            catch
+            {
+                zone.Layout = ZoneLayout.None;
+            }
+
+            try
+            {
+                zone.Scaling = (ZoneScaling)Enum.Parse(typeof(ZoneScaling), zd.Scaling);
+            }
+            catch
+            {
+                zone.Scaling = ZoneScaling.None;
+            }
+
+            zone.X = zd.X;
+            zone.Y = zd.Y;
+            zone.Width = zd.Width;
+            zone.Height = zd.Height;
+            zone.ShowBorder = zd.ShowBorder;
+            zone.BorderColor = new XmlColor(Color.FromArgb(zd.ArgbBorderColor));
+            zone.Title = zd.Title;
+            zone.IsTitleZone = zd.IsTitleZone;
+            zone.IsMemberZone = zd.IsMemberZone;
+            return zone;
+        }
+
+        // =====================================================================
+        // PointF[] 与 List<PointF[]> 的字符串编解码辅助方法
+        // =====================================================================
+
+        /// <summary>
+        /// 将 PointF[] 编码为 "x1,y1;x2,y2;..." 字符串。
+        /// 使用 InvariantCulture 保证小数点为 "."，避免与坐标分隔符 "," 冲突。
+        /// </summary>
+        private static string PointsToString(PointF[] points)
+        {
+            if (points == null || points.Length == 0)
+                return "";
+
+            string[] parts = new string[points.Length];
+            for (int i = 0; i < points.Length; i++)
+            {
+                parts[i] = points[i].X.ToString(CultureInfo.InvariantCulture)
+                    + "," + points[i].Y.ToString(CultureInfo.InvariantCulture);
+            }
+            return string.Join(";", parts);
+        }
+
+        /// <summary>
+        /// 将 "x1,y1;x2,y2;..." 字符串解码为 PointF[]。
+        /// 解析失败时返回 null，保证向后兼容。
+        /// </summary>
+        private static PointF[] ParsePoints(string s)
+        {
+            if (string.IsNullOrEmpty(s))
+                return null;
+
+            string[] parts = s.Split(';');
+            List<PointF> result = new List<PointF>();
+            for (int i = 0; i < parts.Length; i++)
+            {
+                string trimmed = parts[i].Trim();
+                if (trimmed.Length == 0)
+                    continue;
+
+                string[] xy = trimmed.Split(',');
+                if (xy.Length >= 2)
+                {
+                    float x;
+                    float y;
+                    if (float.TryParse(xy[0].Trim(), NumberStyles.Float,
+                            CultureInfo.InvariantCulture, out x)
+                        && float.TryParse(xy[1].Trim(), NumberStyles.Float,
+                            CultureInfo.InvariantCulture, out y))
+                    {
+                        result.Add(new PointF(x, y));
+                    }
+                }
+            }
+
+            if (result.Count == 0)
+                return null;
+            return result.ToArray();
+        }
+
+        /// <summary>
+        /// 将 List&lt;PointF[]&gt; 编码为 "x1,y1;x2,y2 | x3,y3;x4,y4" 字符串。
+        /// 路径之间以 " | " 分隔，空路径会被跳过。
+        /// </summary>
+        private static string MultiPathsToString(List<PointF[]> paths)
+        {
+            if (paths == null || paths.Count == 0)
+                return "";
+
+            List<string> pathStrs = new List<string>();
+            foreach (PointF[] path in paths)
+            {
+                if (path == null || path.Length == 0)
+                    continue;
+                pathStrs.Add(PointsToString(path));
+            }
+
+            if (pathStrs.Count == 0)
+                return "";
+            return string.Join(" | ", pathStrs.ToArray());
+        }
+
+        /// <summary>
+        /// 将 "x1,y1;x2,y2 | x3,y3;x4,y4" 字符串解码为 List&lt;PointF[]&gt;。
+        /// 路径以 "|" 分隔，解析失败时返回 null，保证向后兼容。
+        /// </summary>
+        private static List<PointF[]> ParseMultiPaths(string s)
+        {
+            if (string.IsNullOrEmpty(s))
+                return null;
+
+            string[] pathParts = s.Split('|');
+            List<PointF[]> result = new List<PointF[]>();
+            for (int i = 0; i < pathParts.Length; i++)
+            {
+                string trimmed = pathParts[i].Trim();
+                if (trimmed.Length == 0)
+                    continue;
+
+                PointF[] pts = ParsePoints(trimmed);
+                if (pts != null && pts.Length > 0)
+                    result.Add(pts);
+            }
+
+            if (result.Count == 0)
+                return null;
+            return result;
         }
     }
 }

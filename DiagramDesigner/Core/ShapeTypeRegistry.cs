@@ -12,10 +12,15 @@ namespace DiagramDesigner.Core
 
         private ShapeTypeRegistry() { }
 
+        /// <summary>
+        /// 注册图形类型。自动调用 EnsureDefaultZones 确保每个图形
+        /// 至少拥有一个默认标题 Zone。
+        /// </summary>
         public void Register(ShapeType shapeType)
         {
             if (shapeType == null || shapeType.Name.Length == 0)
                 return;
+            shapeType.EnsureDefaultZones();
             _types[shapeType.Name] = shapeType;
         }
 

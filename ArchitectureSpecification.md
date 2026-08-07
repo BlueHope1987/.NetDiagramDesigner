@@ -71,9 +71,10 @@ MarvinDiagramDesigner/
 | `ShapeBase.cs` | 所有图形的抽象基类，定义属性、HitTest、Clone、选中绘制、ResizeHandle |
 | `Connection.cs` | 连线模型，支持 Straight/Curve/Orthogonal 三种模式，含标签、箭头绘制 |
 | `DrawingDocument.cs` | 文档模型，管理形状集合与连线集合，提供选中管理、ZOrder 排序、HitTest |
-| `RenderCommand.cs` | 渲染命令，7 种类型（Rectangle/Ellipse/RoundedRect/Polygon/Line/Text/MemberArea），数据驱动绘制 |
-| `ShapeType.cs` | 图形类型描述，包含名称、分类、RenderCommand 列表、默认尺寸/颜色、状态列表，可创建实例 |
-| `ShapeTypeRegistry.cs` | 图形类型运行时注册表（单例），提供按名称/分类查询、注册/注销功能 |
+| `RenderCommand.cs` | 渲染命令，8 种类型（Rectangle/Ellipse/RoundedRect/Polygon/CompoundPolygon/Line/Text/MemberArea），数据驱动绘制；支持多路径与布尔运算（Union/Subtract/Intersect/Xor） |
+| `ShapeType.cs` | 图形类型描述，包含名称、分类、RenderCommand 列表、Zone 列表、默认尺寸/颜色、状态列表，可创建实例 |
+| `ShapeTypeRegistry.cs` | 图形类型运行时注册表（单例），注册时自动调用 EnsureDefaultZones 确保每个图形拥有默认标题 Zone |
+| `ShapeZone.cs` | 图形区域（Zone）模型，定义 ZoneLayout/ZoneScaling 枚举及 ShapeZone 类，用于图形内分区布局（标题、成员、堆叠、流式） |
 | `ShapeMember.cs` | 类图成员定义（Property/Method/Event/Constraint/Field），含可见性、签名生成 |
 | `ShapeMemberParameter.cs` | 成员参数定义（名称、类型、默认值） |
 | `ShapeState.cs` | 图形状态定义，包含状态名及各部位颜色（填充/边框/文字/标题栏） |
@@ -100,7 +101,7 @@ MarvinDiagramDesigner/
 | `ToolboxPanel.cs` | 工具箱面板：按分类显示已注册图形类型，支持拖放创建图形实例，自动生成图标 |
 | `DiagramEditor.cs` | 复合控件（Facade）：封装画布+工具箱+属性栏+工具栏+状态栏+右键菜单+菜单注入+主题系统 |
 | `DiagramEditor.Commands.cs` | 复合控件的命令/事件处理部分：文件操作、编辑操作、视图切换、工具切换、右键菜单、上下文感知菜单 |
-| `CustomShapeDialog.cs` | 自定义图形构建器对话框，支持状态与行为编辑、多边形顶点编辑 |
+| `CustomShapeDialog.cs` | 自定义图形构建器对话框，支持状态与行为编辑、多边形顶点编辑、多路径/布尔运算、Zone 区域管理 |
 | `ToolboxConfigDialog.cs` | 工具箱配置对话框，管理工具项的启用/排序/增删 |
 | `ShapeActionEditDialog.cs` | 图形行为编辑对话框，添加或编辑单个 ShapeAction |
 
@@ -114,7 +115,7 @@ MarvinDiagramDesigner/
 
 | 文件 | 职责 |
 |------|------|
-| `DocumentData.cs` | 数据传输对象（DTO）：DocumentData/ShapeData/ConnectionData/MemberData/ParameterData/StateData |
+| `DocumentData.cs` | 数据传输对象（DTO）：DocumentData/ShapeData/ConnectionData/MemberData/ParameterData/StateData/ZoneData/RenderCommandData |
 | `XmlShapeSerializer.cs` | XML 序列化/反序列化器，实现 DrawingDocument 与 DocumentData 之间的双向转换 |
 
 #### DemoApp（`DemoApp/`）
@@ -176,7 +177,27 @@ DiagramEditor (UserControl)
 - 容器内的连线在容器绘制阶段单独渲染，也使用裁剪区域。
 - `DrawingDocument.RemoveShape` 会级联移除子元素和相关连线。
 
-### 3.5 序列化架构
+### 3.5 Zone 分区布局系统
+
+Zone 是图形内部的逻辑分区，用于容纳标题、成员列表或子元件。每个 `ShapeType` 通过 `EnsureDefaultZones()` 自动获得一个默认的标题 Zone（`IsTitleZone=true`），支持成员的图形还获得一个成员 Zone（`IsMemberZone=true`）。
+
+```
+ShapeZone
+  +-- Name: Zone 唯一标识
+  +-- Layout: ZoneLayout 枚举 (None/Title/Stack/Flow/Member)
+  +-- Scaling: ZoneScaling 枚举 (None/Freeze)
+  +-- X/Y/Width/Height: 归一化坐标 (0~1)
+  +-- IsTitleZone / IsMemberZone: 类型标记
+  +-- RenderCommands: Zone 内绘制指令
+```
+
+**缩放行为**：`Freeze` 缩放的 Zone 使用 `RefWidth/RefHeight`（创建时的默认尺寸）计算绝对像素，缩放图形时 Zone 区域不漂移；`None` 缩放的 Zone 随图形等比缩放。
+
+**三级覆盖**：`GenericShape.GetEffectiveZones()` 按优先级返回生效 Zone 列表——当前状态的 `CustomZones` > 实例自身的 `Zones` > `ShapeType` 的 `Zones`。这允许不同状态呈现不同的分区布局。
+
+**多路径与布尔运算**：`RenderCommand` 的 `CompoundPolygon` 类型支持单图形由多条封闭路径组成。`BooleanOperation` 枚举（None/Union/Subtract/Intersect/Xor）决定路径间布尔运算方式，使用 `Region` 实现几何合并。多路径数据通过 `MultiPaths` 属性存储，每条路径为归一化顶点数组。
+
+### 3.6 序列化架构
 
 采用 DTO（Data Transfer Object）模式：
 
@@ -192,6 +213,8 @@ DocumentData (XML 可序列化 DTO)
 - `ConvertToData`/`ConvertFromData` 负责运行时对象与 DTO 之间的双向映射。
 - 颜色通过 `XmlColor`（int ARGB）在 DTO 中存储，连接模式/可见性等枚举以字符串形式存储，反序列化时通过 `Enum.Parse` 恢复（带 try-catch 回退）。
 - 容器父子关系通过 `ParentId` 在 DTO 中保存，反序列化时重建引用。
+- Zone 列表通过 `ZoneData` DTO 序列化，包括布局/缩放枚举、归一化坐标、Zone 内绘制指令。状态的 `CustomZones` 也同步序列化。
+- 多路径数据通过字符串编码（`MultiPathsStr`）序列化，布尔运算类型通过字符串枚举名存储。
 
 ---
 
@@ -226,7 +249,7 @@ DocumentData (XML 可序列化 DTO)
 #### ShapeMember / ShapeState / ShapeAction
 
 - **ShapeMember**：类图成员，支持 5 种类型（Property/Method/Event/Constraint/Field）和 4 种可见性（Public/Private/Protected/Internal），`GetSignature()` 生成 UML 风格签名（如 `+ GetName() : string`）。
-- **ShapeState**：图形状态，定义特定状态下的填充/边框/文字/标题栏颜色方案，图形可在多状态间切换。
+- **ShapeState**：图形状态，定义特定状态下的填充/边框/文字/标题栏颜色方案，支持自定义 RenderCommand 列表（不同状态呈现不同图形）和自定义 Zone 列表，图形可在多状态间切换。
 - **ShapeAction**：图形行为，支持状态切换（StateChange）与宿主回调（HostCallback）两种类型，挂载到图形右键菜单，实现行为与控件解耦。
 
 #### ShapeLibrary / ShapeComposer
@@ -247,7 +270,9 @@ DocumentData (XML 可序列化 DTO)
 
 #### GenericShape（通用图形）
 
-命名空间 `DiagramDesigner.Shapes`，继承 `ShapeBase`。通过 RenderCommand 列表驱动绘制，支持类图成员管理和多状态切换。绘制流程为：查找 ShapeType -> 执行 RenderCommand 列表 -> 绘制名称 -> 绘制成员 -> 绘制选中指示器。当 ShapeType 未找到时使用 `DrawFallback` 后备绘制。椭圆类型使用椭圆边缘计算连接点，多边形类型回退到矩形算法。`Clone` 执行深拷贝。
+命名空间 `DiagramDesigner.Shapes`，继承 `ShapeBase`。通过 RenderCommand 列表驱动绘制，支持类图成员管理、多状态切换和 Zone 分区布局。绘制流程为：查找 ShapeType -> 执行 RenderCommand 列表 -> 渲染 Zone（边框及 Zone 内绘制指令）-> 绘制名称（优先使用 Title Zone）-> 绘制成员（优先使用 Member Zone）-> 绘制选中指示器。当 ShapeType 未找到时使用 `DrawFallback` 后备绘制。
+
+Zone 管理采用三级覆盖策略：`GetEffectiveZones()` 优先使用当前状态的 `CustomZones`，其次使用实例自身的 `Zones`，最后回退到 `ShapeType` 的 `Zones`。`GetZoneBounds()` 根据 `ZoneScaling` 决定使用参考尺寸（Freeze）还是相对尺寸（随图形缩放）。椭圆类型使用椭圆边缘计算连接点，多边形类型回退到矩形算法。`Clone` 执行深拷贝。
 
 #### ContainerShape（容器图形）
 
@@ -289,7 +314,7 @@ DocumentData (XML 可序列化 DTO)
 
 #### 对话框控件
 
-- **CustomShapeDialog**：自定义图形构建器，含状态编辑与多边形顶点编辑选项卡。
+- **CustomShapeDialog**：自定义图形构建器，含状态编辑（左侧状态列表 + 右侧图形编辑区域）、多边形顶点编辑、多路径管理与布尔运算（Union/Subtract/Intersect/Xor）、Zone 区域添加/编辑/删除，以及行为编辑选项卡。
 - **ToolboxConfigDialog**：工具箱配置，管理工具项启用/排序/增删。
 - **ShapeActionEditDialog**：图形行为编辑，添加或编辑单个 ShapeAction。
 
@@ -303,12 +328,13 @@ DocumentData (XML 可序列化 DTO)
 
 #### DocumentData / XmlShapeSerializer
 
-命名空间 `DiagramDesigner.Serialization`。`DocumentData` 及其嵌套类（ShapeData、ConnectionData、MemberData、ParameterData、StateData）是 XML 可序列化的 DTO，所有类标记 `[Serializable]`。
+命名空间 `DiagramDesigner.Serialization`。`DocumentData` 及其嵌套类（ShapeData、ConnectionData、MemberData、ParameterData、StateData、ZoneData、RenderCommandData）是 XML 可序列化的 DTO，所有类标记 `[Serializable]`。
 
 `XmlShapeSerializer` 实现运行时模型与 DTO 之间的双向转换：
 
-- **ConvertToData**：遍历图形生成 ShapeData（建立 idMap），回填 ParentId，遍历连线生成 ConnectionData。
-- **ConvertFromData**：遍历 ShapeData 重建图形（建立 shapeMap），重建父子关系，遍历 ConnectionData 通过 shapeMap 恢复连线引用，枚举解析带 try-catch 回退。
+- **ConvertToData**：遍历图形生成 ShapeData（建立 idMap），序列化 Zone 列表和 RefWidth/RefHeight，回填 ParentId，遍历连线生成 ConnectionData。状态的 CustomRenderCommands 和 CustomZones 也同步序列化。
+- **ConvertFromData**：遍历 ShapeData 重建图形（建立 shapeMap），反序列化 Zone 列表和多路径数据，重建父子关系，遍历 ConnectionData 通过 shapeMap 恢复连线引用，枚举解析带 try-catch 回退。
+- **辅助方法**：`ToZoneData/FromZoneData` 转换 Zone 对象，`ToCommandData/FromCommandData` 转换 RenderCommand（含多路径），`MultiPathsToString/ParseMultiPaths` 处理多路径数据的字符串编码。
 
 `Save`/`Load` 静态方法封装 XML 文件读写。
 

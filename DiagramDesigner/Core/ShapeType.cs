@@ -39,6 +39,7 @@ namespace DiagramDesigner.Core
         private bool _allowRename = false;
         private bool _resizable = false;
         private List<ShapeAction> _customActions = new List<ShapeAction>();
+        private List<ShapeZone> _zones = new List<ShapeZone>();
 
         public string Name
         {
@@ -165,7 +166,58 @@ namespace DiagramDesigner.Core
             set { _customActions = value; }
         }
 
+        /// <summary>
+        /// 该图形类型的 Zone 列表。每个 ShapeType 应至少包含一个
+        /// IsTitleZone=true 的标题 Zone 用于显示名称。
+        /// 若 SupportsMembers=true，还应包含一个成员 Zone。
+        /// </summary>
+        public List<ShapeZone> Zones
+        {
+            get { return _zones; }
+            set { _zones = value; }
+        }
+
         public ShapeType() { }
+
+        /// <summary>
+        /// 确保该 ShapeType 拥有默认的标题 Zone 和（若支持成员）成员 Zone。
+        /// 若已有同名的 Zone 则不重复创建。
+        /// </summary>
+        public void EnsureDefaultZones()
+        {
+            // 确保有标题 Zone
+            bool hasTitleZone = false;
+            foreach (ShapeZone z in _zones)
+            {
+                if (z.IsTitleZone)
+                {
+                    hasTitleZone = true;
+                    break;
+                }
+            }
+            if (!hasTitleZone)
+            {
+                _zones.Insert(0, ShapeZone.CreateDefaultTitleZone(_nameAreaTop));
+            }
+
+            // 若支持成员且有成员区，确保有成员 Zone
+            if (_supportsMembers)
+            {
+                bool hasMemberZone = false;
+                foreach (ShapeZone z in _zones)
+                {
+                    if (z.IsMemberZone)
+                    {
+                        hasMemberZone = true;
+                        break;
+                    }
+                }
+                if (!hasMemberZone)
+                {
+                    _zones.Add(ShapeZone.CreateDefaultMemberZone(_nameAreaTop));
+                }
+            }
+        }
 
         public ShapeBase CreateInstance()
         {
@@ -190,6 +242,15 @@ namespace DiagramDesigner.Core
                 shape.TextColor = _defaultTextColor.ToColor();
                 shape.Resizable = _resizable;
                 shape.MemberAreaTop = _nameAreaTop;
+                shape.RefWidth = _defaultWidth;
+                shape.RefHeight = _defaultHeight;
+
+                // 确保有默认 Zone 并传递给实例
+                EnsureDefaultZones();
+                foreach (ShapeZone zone in _zones)
+                {
+                    shape.Zones.Add(zone.Clone());
+                }
 
                 foreach (ShapeState state in _defaultStates)
                 {

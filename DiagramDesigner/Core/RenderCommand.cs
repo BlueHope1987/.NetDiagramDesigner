@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 
@@ -12,7 +13,26 @@ namespace DiagramDesigner.Core
         RoundedRect,
         Line,
         Text,
-        MemberArea
+        MemberArea,
+        /// <summary>复合多路径图形：由多个封闭路径经布尔运算组合而成</summary>
+        CompoundPolygon
+    }
+
+    /// <summary>
+    /// 布尔运算类型。用于 CompoundPolygon 类型 RenderCommand 的多路径组合。
+    /// </summary>
+    public enum BooleanOperation
+    {
+        /// <summary>各路径独立绘制（不组合）</summary>
+        None,
+        /// <summary>并集：所有路径的合并区域</summary>
+        Union,
+        /// <summary>差集：第一条路径减去其余路径</summary>
+        Subtract,
+        /// <summary>交集：所有路径的公共区域</summary>
+        Intersect,
+        /// <summary>异或：所有路径的对称差</summary>
+        Xor
     }
 
     [Serializable]
@@ -35,6 +55,10 @@ namespace DiagramDesigner.Core
         private bool _useShapeColors = true;
         private bool _fill = true;
         private bool _stroke = true;
+
+        // === 多路径与布尔运算 ===
+        private List<PointF[]> _multiPaths = null;
+        private BooleanOperation _boolOp = BooleanOperation.None;
 
         public RenderCommandType CommandType
         {
@@ -138,6 +162,25 @@ namespace DiagramDesigner.Core
             set { _stroke = value; }
         }
 
+        /// <summary>
+        /// 多路径列表。每条路径为一个归一化(0~1)顶点数组。
+        /// 仅当 CommandType 为 CompoundPolygon 时使用。
+        /// </summary>
+        public List<PointF[]> MultiPaths
+        {
+            get { return _multiPaths; }
+            set { _multiPaths = value; }
+        }
+
+        /// <summary>
+        /// 布尔运算类型。仅当 CommandType 为 CompoundPolygon 时使用。
+        /// </summary>
+        public BooleanOperation BoolOp
+        {
+            get { return _boolOp; }
+            set { _boolOp = value; }
+        }
+
         public void Execute(Graphics g, RectangleF bounds, ShapeColors colors, float scale)
         {
             float absX = bounds.X + _x * bounds.Width;
@@ -162,6 +205,9 @@ namespace DiagramDesigner.Core
                     break;
                 case RenderCommandType.Polygon:
                     DrawPolygon(g, rect, colors, stroke, scale);
+                    break;
+                case RenderCommandType.CompoundPolygon:
+                    DrawCompoundPolygon(g, rect, colors, stroke, scale);
                     break;
                 case RenderCommandType.Line:
                     DrawLine(g, rect, stroke, scale);
@@ -255,6 +301,100 @@ namespace DiagramDesigner.Core
             }
         }
 
+        /// <summary>
+        /// 绘制复合多路径图形。支持布尔运算组合多条封闭路径。
+        /// </summary>
+        private void DrawCompoundPolygon(Graphics g, RectangleF rect, ShapeColors colors, Color stroke, float scale)
+        {
+            if (_multiPaths == null || _multiPaths.Count == 0)
+                return;
+
+            // 将归一化路径转换为绝对坐标路径
+            List<GraphicsPath> absPaths = new List<GraphicsPath>();
+            foreach (PointF[] pathPts in _multiPaths)
+            {
+                if (pathPts == null || pathPts.Length < 3)
+                    continue;
+                PointF[] pts = new PointF[pathPts.Length];
+                for (int i = 0; i < pathPts.Length; i++)
+                {
+                    pts[i] = new PointF(
+                        rect.X + pathPts[i].X * rect.Width,
+                        rect.Y + pathPts[i].Y * rect.Height);
+                }
+                GraphicsPath gp = new GraphicsPath();
+                gp.AddPolygon(pts);
+                absPaths.Add(gp);
+            }
+
+            if (absPaths.Count == 0)
+                return;
+
+            if (_boolOp == BooleanOperation.None || absPaths.Count == 1)
+            {
+                // 无布尔运算：各路径独立绘制
+                if (_fill)
+                {
+                    using (Brush brush = CreateFillBrush(rect, colors))
+                    {
+                        foreach (GraphicsPath gp in absPaths)
+                            g.FillPath(brush, gp);
+                    }
+                }
+                if (_stroke)
+                {
+                    using (Pen pen = new Pen(stroke, _strokeWidth / scale))
+                    {
+                        foreach (GraphicsPath gp in absPaths)
+                            g.DrawPath(pen, gp);
+                    }
+                }
+            }
+            else
+            {
+                // 布尔运算：使用 Region 合并路径
+                Region resultRegion = new Region(absPaths[0]);
+                for (int i = 1; i < absPaths.Count; i++)
+                {
+                    switch (_boolOp)
+                    {
+                        case BooleanOperation.Union:
+                            resultRegion.Union(absPaths[i]);
+                            break;
+                        case BooleanOperation.Subtract:
+                            resultRegion.Exclude(absPaths[i]);
+                            break;
+                        case BooleanOperation.Intersect:
+                            resultRegion.Intersect(absPaths[i]);
+                            break;
+                        case BooleanOperation.Xor:
+                            resultRegion.Xor(absPaths[i]);
+                            break;
+                    }
+                }
+
+                if (_fill)
+                {
+                    using (Brush brush = CreateFillBrush(rect, colors))
+                        g.FillRegion(brush, resultRegion);
+                }
+                if (_stroke)
+                {
+                    // Region 不直接支持描边，改为绘制各子路径的轮廓
+                    using (Pen pen = new Pen(stroke, _strokeWidth / scale))
+                    {
+                        foreach (GraphicsPath gp in absPaths)
+                            g.DrawPath(pen, gp);
+                    }
+                }
+                resultRegion.Dispose();
+            }
+
+            // 释放临时路径
+            foreach (GraphicsPath gp in absPaths)
+                gp.Dispose();
+        }
+
         private void DrawLine(Graphics g, RectangleF rect, Color stroke, float scale)
         {
             using (Pen pen = new Pen(stroke, _strokeWidth / scale))
@@ -293,6 +433,47 @@ namespace DiagramDesigner.Core
             }
         }
 
+        /// <summary>深拷贝当前 RenderCommand</summary>
+        public RenderCommand Clone()
+        {
+            RenderCommand c = new RenderCommand();
+            c._commandType = _commandType;
+            c._x = _x; c._y = _y;
+            c._width = _width; c._height = _height;
+            c._cornerRadius = _cornerRadius;
+            c._fillColor = new XmlColor(_fillColor.ToColor());
+            c._strokeColor = new XmlColor(_strokeColor.ToColor());
+            c._strokeWidth = _strokeWidth;
+            c._text = _text;
+            c._textAlign = _textAlign;
+            c._fontSize = _fontSize;
+            c._isBold = _isBold;
+            if (_polygonPoints != null)
+            {
+                c._polygonPoints = new PointF[_polygonPoints.Length];
+                for (int i = 0; i < _polygonPoints.Length; i++)
+                    c._polygonPoints[i] = _polygonPoints[i];
+            }
+            c._useShapeColors = _useShapeColors;
+            c._fill = _fill;
+            c._stroke = _stroke;
+            c._boolOp = _boolOp;
+            if (_multiPaths != null)
+            {
+                c._multiPaths = new List<PointF[]>();
+                foreach (PointF[] path in _multiPaths)
+                {
+                    if (path != null)
+                    {
+                        PointF[] copy = new PointF[path.Length];
+                        for (int i = 0; i < path.Length; i++)
+                            copy[i] = path[i];
+                        c._multiPaths.Add(copy);
+                    }
+                }
+            }
+            return c;
+        }
     }
 
     public class ShapeColors

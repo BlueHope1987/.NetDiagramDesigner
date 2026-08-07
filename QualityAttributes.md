@@ -61,26 +61,35 @@ DiagramEditor 的菜单通过注入机制集成到宿主菜单栏。`FindOrCreat
 
 RenderCommand 使用相对坐标（0~1 范围）描述图形绘制指令。新增图形类型只需定义一组 RenderCommand 即可实现任意外观，无需修改控件库代码。
 
-当前支持的 RenderCommandType：`Rectangle`、`RoundedRect`、`Ellipse`、`Polygon`、`Line`、`Text`、`MemberArea`。新增绘制类型只需在枚举中添加新值，并在 `Execute` 的 switch 中添加对应分支。
+当前支持的 RenderCommandType：`Rectangle`、`RoundedRect`、`Ellipse`、`Polygon`、`CompoundPolygon`（多路径布尔运算）、`Line`、`Text`、`MemberArea`。新增绘制类型只需在枚举中添加新值，并在 `Execute` 的 switch 中添加对应分支。
 
-`ShapeLibrary` 预定义了大量常用图形类型供宿主直接使用，`ShapeComposer` 支持通过 Union/Subtract/Intersect/Xor 布尔运算组合复合图形。
+`ShapeLibrary` 预定义了大量常用图形类型供宿主直接使用，`ShapeComposer` 支持通过 Union/Subtract/Intersect/Xor 布尔运算组合复合图形。`CompoundPolygon` 类型支持单图形内多条封闭路径的布尔运算，实现更复杂的几何外观。
 
-### 3.2 ShapeTypeRegistry 运行时注册
+### 3.2 Zone 分区布局系统
+
+每个图形类型通过 `EnsureDefaultZones()` 自动获得默认标题 Zone，可在编辑器中添加/编辑/删除自定义 Zone：
+
+- **ZoneLayout**：None（无布局）、Title（标题区域）、Stack（垂直堆叠）、Flow（水平流式）、Member（成员列表）。
+- **ZoneScaling**：None（随图形等比缩放）、Freeze（冻结边角，缩放时保持绝对像素尺寸，使标题不漂移）。
+- Zone 采用归一化坐标（0~1），通过 `RefWidth/RefHeight` 参考尺寸计算绝对像素。
+- 状态可拥有独立的 `CustomZones` 列表，实现不同状态下的不同分区布局。
+
+### 3.3 ShapeTypeRegistry 运行时注册
 
 图形类型可在运行时动态注册、注销、清空重建。`ToolboxPanel.ReloadFromRegistry()` 可随时刷新工具箱以反映注册表的最新状态。
 
-### 3.3 类图成员与状态系统
+### 3.4 类图成员与状态系统
 
 GenericShape 的 `ShapeMember`/`ShapeMemberParameter`/`ShapeState` 构成了完整的类图成员系统：
 
 - **ShapeMember**：支持 5 种成员类型（Property/Method/Event/Constraint/Field）、4 种可见性（Public/Private/Protected/Internal）、静态/抽象修饰符、参数列表，`GetSignature()` 自动生成 UML 风格签名。
-- **ShapeState**：支持多状态定义，每种状态有独立的颜色方案，图形可在状态间切换。
+- **ShapeState**：支持多状态定义，每种状态有独立的颜色方案，可使用自定义 RenderCommand 呈现不同图形、自定义 Zone 列表呈现不同分区布局，图形可在状态间切换。
 
-### 3.4 连线模式可扩展
+### 3.5 连线模式可扩展
 
 ConnectionMode 枚举当前定义了 3 种模式：`Straight`、`Curve`、`Orthogonal`。新增连线模式只需在枚举中添加新值，并在 `GetDrawPoints()` 和 `Draw()` 中添加对应的控制点计算和绘制逻辑。
 
-### 3.5 主题颜色可配置
+### 3.6 主题颜色可配置
 
 GlobalConfig 提供了 9 个主题感知的只读颜色属性，通过 EditorTheme 枚举在 Light/Dark 之间切换。MyColorTable 覆盖了 20+ 个 ProfessionalColorTable 属性，所有颜色值均可根据主题需求调整。
 

@@ -4,20 +4,8 @@ using System.Drawing;
 
 namespace DiagramDesigner.Core
 {
-    /// <summary>
-    /// 图形布尔运算类型
-    /// </summary>
-    public enum BooleanOperation
-    {
-        /// <summary>并集：叠加显示所有部分</summary>
-        Union,
-        /// <summary>交集：仅保留重叠区域（视觉模拟）</summary>
-        Intersection,
-        /// <summary>差集：从基础图形中移除叠加部分</summary>
-        Difference,
-        /// <summary>异或：保留不重叠部分</summary>
-        Xor
-    }
+    // 注：BooleanOperation 枚举现统一定义在 RenderCommand.cs 中
+    // （成员：None, Union, Subtract, Intersect, Xor），此处不再重复定义。
 
     /// <summary>
     /// 图形组合器。支持将多个内置或自定义图形组合为新的复合图形。
@@ -38,7 +26,7 @@ namespace DiagramDesigner.Core
         /// </summary>
         public static ShapeType Subtract(string name, string category, ShapeType baseShape, ShapeType cutShape)
         {
-            return Combine(name, category, BooleanOperation.Difference, baseShape, cutShape);
+            return Combine(name, category, BooleanOperation.Subtract, baseShape, cutShape);
         }
 
         /// <summary>
@@ -46,7 +34,7 @@ namespace DiagramDesigner.Core
         /// </summary>
         public static ShapeType Intersect(string name, string category, params ShapeType[] shapes)
         {
-            return Combine(name, category, BooleanOperation.Intersection, shapes);
+            return Combine(name, category, BooleanOperation.Intersect, shapes);
         }
 
         /// <summary>
@@ -216,37 +204,14 @@ namespace DiagramDesigner.Core
 
         private static RenderCommand CloneCommand(RenderCommand source)
         {
-            RenderCommand c = new RenderCommand();
-            c.CommandType = source.CommandType;
-            c.X = source.X; c.Y = source.Y;
-            c.Width = source.Width; c.Height = source.Height;
-            c.CornerRadius = source.CornerRadius;
-            c.FillColor = source.FillColor;
-            c.StrokeColor = source.StrokeColor;
-            c.StrokeWidth = source.StrokeWidth;
-            c.Text = source.Text;
-            c.TextAlign = source.TextAlign;
-            c.FontSize = source.FontSize;
-            c.IsBold = source.IsBold;
-            c.UseShapeColors = source.UseShapeColors;
-            c.Fill = source.Fill;
-            c.Stroke = source.Stroke;
-
-            if (source.PolygonPoints != null && source.PolygonPoints.Length > 0)
-            {
-                c.PolygonPoints = new PointF[source.PolygonPoints.Length];
-                for (int i = 0; i < source.PolygonPoints.Length; i++)
-                    c.PolygonPoints[i] = source.PolygonPoints[i];
-            }
-
-            return c;
+            return source.Clone();
         }
 
         private static void ApplyOperation(RenderCommand cmd, BooleanOperation op, int layerIndex)
         {
             switch (op)
             {
-                case BooleanOperation.Difference:
+                case BooleanOperation.Subtract:
                     // 差集：裁剪图形以半透明方式显示，便于区分
                     if (layerIndex > 0)
                     {
@@ -257,7 +222,7 @@ namespace DiagramDesigner.Core
                     }
                     break;
 
-                case BooleanOperation.Intersection:
+                case BooleanOperation.Intersect:
                     // 交集：非首层图形仅描边不填充，模拟轮廓交叠
                     if (layerIndex > 0)
                     {

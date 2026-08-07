@@ -12,9 +12,11 @@ Marvin's DiagramDesigner 是一个兼容 .NET Framework 2.0 的 WinForms 可视�
 - 纯 WinForms 实现，仅依赖 System / System.Drawing / System.Windows.Forms / System.Xml 四个标准程序集
 - RenderCommand 数据驱动渲染，图形外观与控件代码完全分离
 - 运行时图形类型注册，新增图形无需修改控件库
+- Zone 分区布局系统：每个图形默认拥有标题 Zone，支持自定义 Zone 区域（标题、成员列表、堆叠、流式布局）、冻结缩放
+- 多路径与布尔运算：单个图形可由多个封闭路径组成，支持并集/差集/交集/异或运算
 - 双缓冲绘制，支持缩放、平移、网格吸附
 - 容器嵌套与裁剪绘制，容器内连线自动裁剪
-- XML 序列化，文档可持久化与还原
+- XML 序列化，文档可持久化与还原（含 Zone、多路径、自定义图形配置）
 - 亮色/暗色双主题
 - Facade 模式封装，宿主只需与一个 DiagramEditor 实例交互
 
@@ -117,9 +119,11 @@ All code resides under the `DiagramDesigner` namespace with no third-party depen
 - Pure WinForms, depends only on System / System.Drawing / System.Windows.Forms / System.Xml
 - RenderCommand data-driven rendering, fully separating shape appearance from control code
 - Runtime shape type registration, adding shapes requires no control library changes
+- Zone-based layout system: every shape has a default Title Zone; supports custom Zones (title, member list, stack, flow layout) with freeze scaling
+- Multi-path with boolean operations: a single shape can consist of multiple closed paths with Union/Subtract/Intersect/Xor operations
 - Double-buffered rendering with zoom, pan, and grid snapping
 - Container nesting with clip-based drawing, automatic clipping of in-container connections
-- XML serialization for document persistence and restoration
+- XML serialization for document persistence and restoration (including Zones, multi-paths, custom shape configs)
 - Light/Dark dual themes
 - Facade pattern encapsulation, host interacts with a single DiagramEditor instance
 
