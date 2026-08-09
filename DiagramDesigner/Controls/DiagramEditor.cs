@@ -353,6 +353,7 @@ namespace DiagramDesigner.Controls
             _canvas.ShapeDeleted += new EventHandler<ShapeEventArgs>(OnCanvasShapeDeleted);
             _canvas.ConnectionAdded += new EventHandler<ConnectionEventArgs>(OnCanvasConnectionAdded);
             _canvas.ConnectionDeleted += new EventHandler<ConnectionEventArgs>(OnCanvasConnectionDeleted);
+            _canvas.ZoneClicked += new EventHandler<ZoneClickEventArgs>(OnCanvasZoneClicked);
             _canvas.MouseMove += new MouseEventHandler(OnCanvasMouseMove);
             _canvas.MouseDown += new MouseEventHandler(OnCanvasMouseDown);
             _propertyGrid.PropertyValueChanged += new PropertyValueChangedEventHandler(OnPropertyValueChanged);

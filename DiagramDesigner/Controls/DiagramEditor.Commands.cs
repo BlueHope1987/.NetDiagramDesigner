@@ -428,7 +428,8 @@ namespace DiagramDesigner.Controls
             List<ShapeBase> selectedShapes = _canvas.Document.GetSelectedShapes();
             bool designMode = _canvas.Config.DesignMode;
 
-            // 动态生成：基于 ShapeType.CustomActions（运行时操作，始终显示）
+            // 动态生成：基于 ShapeType.CustomActions
+            // 系统行为按 DesignMode 过滤：InlineEditTitle 仅设计时，AddMember/DeleteMember 始终显示
             if (selectedShapes.Count == 1)
             {
                 GenericShape gs = selectedShapes[0] as GenericShape;
@@ -437,15 +438,27 @@ namespace DiagramDesigner.Controls
                     ShapeType st = ShapeTypeRegistry.Instance.GetShapeType(gs.ShapeTypeName);
                     if (st != null && st.CustomActions != null)
                     {
+                        int addedCount = 0;
                         foreach (ShapeAction action in st.CustomActions)
                         {
+                            // 系统行为过滤：InlineEditTitle 仅在设计时显示
+                            if (action.IsSystemBehavior
+                                && action.ActionType == ShapeActionType.InlineEditTitle
+                                && !designMode)
+                                continue;
+
+                            // ZoneConnect 不在菜单中显示（由画布直接处理）
+                            if (action.ActionType == ShapeActionType.ZoneConnect)
+                                continue;
+
                             Image icon = LoadIcon(action.IconName);
                             ToolStripMenuItem item = new ToolStripMenuItem(action.Name, icon,
                                 new EventHandler(OnShapeAction));
                             item.Tag = action;
                             menu.Items.Add(item);
+                            addedCount++;
                         }
-                        if (st.CustomActions.Count > 0)
+                        if (addedCount > 0)
                             menu.Items.Add(new ToolStripSeparator());
                     }
                 }
@@ -514,6 +527,22 @@ namespace DiagramDesigner.Controls
             if (gs == null)
                 return;
 
+            // 行为序列：若有子操作则依次执行
+            if (action.HasSubActions)
+            {
+                foreach (ShapeAction sub in action.SubActions)
+                    ExecuteSingleAction(gs, sub);
+                _canvas.Invalidate();
+                return;
+            }
+
+            ExecuteSingleAction(gs, action);
+            _canvas.Invalidate();
+        }
+
+        /// <summary>执行单个行为（非序列）</summary>
+        private void ExecuteSingleAction(GenericShape gs, ShapeAction action)
+        {
             switch (action.ActionType)
             {
                 case ShapeActionType.StateChange:
@@ -533,6 +562,69 @@ namespace DiagramDesigner.Controls
                         _actionCallbacks[action.CallbackName](this, args);
                     }
                     break;
+
+                case ShapeActionType.InlineEditTitle:
+                    _canvas.StartInlineEditTitle(gs);
+                    break;
+
+                case ShapeActionType.AddMember:
+                    {
+                        ShapeMember m = new ShapeMember();
+                        m.Name = "NewMember" + (gs.Members.Count + 1);
+                        m.TypeName = "string";
+                        gs.Members.Add(m);
+                        _canvas.Invalidate();
+                        OnDocumentModified(null, null);
+                    }
+                    break;
+
+                case ShapeActionType.DeleteMember:
+                    {
+                        if (gs.Members.Count > 0)
+                        {
+                            gs.Members.RemoveAt(gs.Members.Count - 1);
+                            _canvas.Invalidate();
+                            OnDocumentModified(null, null);
+                        }
+                    }
+                    break;
+
+                case ShapeActionType.ZoneClick:
+                    // 点击行为由画布 ZoneClicked 事件处理，此处不重复触发
+                    break;
+
+                case ShapeActionType.ZoneConnect:
+                    // 连接行为由画布鼠标事件直接处理
+                    break;
+            }
+        }
+
+        /// <summary>画布 ZoneClicked 事件处理：执行点击区域的系统行为序列</summary>
+        private void OnCanvasZoneClicked(object sender, ZoneClickEventArgs e)
+        {
+            GenericShape gs = e.Shape;
+            if (gs == null)
+                return;
+
+            // 在系统行为中查找匹配的 ZoneClick 行为
+            ShapeType st = ShapeTypeRegistry.Instance.GetShapeType(gs.ShapeTypeName);
+            if (st == null || st.CustomActions == null)
+                return;
+
+            foreach (ShapeAction action in st.CustomActions)
+            {
+                if (action.ActionType == ShapeActionType.ZoneClick
+                    && action.ZoneName == e.Zone.Name)
+                {
+                    // 若有子操作则依次执行
+                    if (action.HasSubActions)
+                    {
+                        foreach (ShapeAction sub in action.SubActions)
+                            ExecuteSingleAction(gs, sub);
+                    }
+                    _canvas.Invalidate();
+                    break;
+                }
             }
         }
 

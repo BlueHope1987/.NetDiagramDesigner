@@ -24,6 +24,7 @@ namespace DiagramDesigner.Shapes
         private List<ShapeZone> _zones = new List<ShapeZone>();
         private float _refWidth = 140f;
         private float _refHeight = 100f;
+        private List<ShapeAction> _systemActions = new List<ShapeAction>();
 
         public string ShapeTypeName
         {
@@ -60,6 +61,13 @@ namespace DiagramDesigner.Shapes
             set { _memberAreaTop = value; NotifyChanged(); }
         }
 
+        /// <summary>成员行高（像素），用于成员渲染和命中测试</summary>
+        public float MemberLineHeight
+        {
+            get { return _memberLineHeight; }
+            set { _memberLineHeight = value; }
+        }
+
         /// <summary>
         /// 该图形实例的 Zone 列表。从 ShapeType 复制而来，
         /// 可在运行时被状态的 CustomZones 覆盖。
@@ -82,6 +90,16 @@ namespace DiagramDesigner.Shapes
         {
             get { return _refHeight; }
             set { _refHeight = value; }
+        }
+
+        /// <summary>
+        /// 系统行为列表。由 ShapeType.GenerateSystemBehaviors 生成，
+        /// 包含标题编辑、成员管理、Zone 点击/连接等系统级行为。
+        /// </summary>
+        public List<ShapeAction> SystemActions
+        {
+            get { return _systemActions; }
+            set { _systemActions = value; }
         }
 
         public GenericShape()
@@ -161,31 +179,14 @@ namespace DiagramDesigner.Shapes
 
         /// <summary>
         /// 计算 Zone 在图形边界内的绝对矩形。
-        /// Freeze 缩放的 Zone 使用参考尺寸（固定像素），
-        /// 非 Freeze 的 Zone 使用相对尺寸（随图形缩放）。
+        /// 委托给 ShapeZone.GetAnchoredBounds 处理锚定逻辑。
         /// </summary>
         private RectangleF GetZoneBounds(ShapeZone zone)
         {
-            float absW, absH;
-
-            if (zone.Scaling == ZoneScaling.Freeze)
-            {
-                absW = zone.Width * _refWidth;
-                absH = zone.Height * _refHeight;
-            }
-            else
-            {
-                absW = zone.Width * Bounds.Width;
-                absH = zone.Height * Bounds.Height;
-            }
-
-            float absX = Bounds.X + zone.X * Bounds.Width;
-            float absY = Bounds.Y + zone.Y * Bounds.Height;
-
-            return new RectangleF(absX, absY, absW, absH);
+            return zone.GetAnchoredBounds(Bounds, _refWidth, _refHeight);
         }
 
-        /// <summary>查找指定类型的 Zone</summary>
+        /// <summary>查找标题 Zone</summary>
         private ShapeZone FindZone(List<ShapeZone> zones, bool isTitle)
         {
             if (zones == null)
@@ -198,6 +199,126 @@ namespace DiagramDesigner.Shapes
                     return z;
             }
             return null;
+        }
+
+        /// <summary>查找指定名称的 Zone</summary>
+        public ShapeZone FindZoneByName(string name)
+        {
+            List<ShapeZone> zones = GetEffectiveZones();
+            if (zones == null)
+                return null;
+            foreach (ShapeZone z in zones)
+            {
+                if (z.Name == name)
+                    return z;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// 命中测试：返回指定坐标下的 Zone（从后往前遍历，最上层优先）。
+        /// 用于画布点击 Zone 触发系统行为。
+        /// </summary>
+        public ShapeZone HitTestZone(PointF worldPoint)
+        {
+            List<ShapeZone> zones = GetEffectiveZones();
+            if (zones == null)
+                return null;
+
+            for (int i = zones.Count - 1; i >= 0; i--)
+            {
+                ShapeZone z = zones[i];
+                if (!z.IsFunctionalZone)
+                    continue;
+                RectangleF bounds = GetZoneBounds(z);
+                if (bounds.Contains(worldPoint))
+                    return z;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// 命中测试成员：返回指定坐标下的成员索引（-1 表示未命中）。
+        /// 在成员 Zone 内按行高计算所属行。
+        /// </summary>
+        public int HitTestMember(PointF worldPoint)
+        {
+            if (_members == null || _members.Count == 0)
+                return -1;
+
+            List<ShapeZone> zones = GetEffectiveZones();
+            if (zones == null)
+                return -1;
+
+            ShapeZone memberZone = null;
+            foreach (ShapeZone z in zones)
+            {
+                if (z.IsMemberZone)
+                {
+                    memberZone = z;
+                    break;
+                }
+            }
+            if (memberZone == null)
+                return -1;
+
+            RectangleF zoneRect = GetZoneBounds(memberZone);
+            if (!zoneRect.Contains(worldPoint))
+                return -1;
+
+            float relY = worldPoint.Y - zoneRect.Y - 2f;
+            if (relY < 0)
+                return -1;
+
+            int idx = (int)(relY / _memberLineHeight);
+            if (idx >= 0 && idx < _members.Count)
+                return idx;
+
+            return -1;
+        }
+
+        /// <summary>
+        /// 获取成员在画布上的渲染矩形（用于内联编辑定位）。
+        /// </summary>
+        public RectangleF GetMemberBounds(int memberIndex)
+        {
+            if (memberIndex < 0 || memberIndex >= _members.Count)
+                return RectangleF.Empty;
+
+            List<ShapeZone> zones = GetEffectiveZones();
+            if (zones == null)
+                return RectangleF.Empty;
+
+            ShapeZone memberZone = null;
+            foreach (ShapeZone z in zones)
+            {
+                if (z.IsMemberZone)
+                {
+                    memberZone = z;
+                    break;
+                }
+            }
+            if (memberZone == null)
+                return RectangleF.Empty;
+
+            RectangleF zoneRect = GetZoneBounds(memberZone);
+            float top = zoneRect.Y + 2f + memberIndex * _memberLineHeight;
+            return new RectangleF(zoneRect.X + 4f, top, zoneRect.Width - 8f, _memberLineHeight);
+        }
+
+        /// <summary>获取标题 Zone 的渲染矩形（用于内联编辑定位）</summary>
+        public RectangleF GetTitleZoneBounds()
+        {
+            List<ShapeZone> zones = GetEffectiveZones();
+            if (zones == null)
+                return RectangleF.Empty;
+
+            foreach (ShapeZone z in zones)
+            {
+                if (z.IsTitleZone)
+                    return GetZoneBounds(z);
+            }
+            return RectangleF.Empty;
         }
 
         public override void Draw(Graphics g, float scale)
@@ -240,9 +361,32 @@ namespace DiagramDesigner.Shapes
                 {
                     RectangleF zoneRect = GetZoneBounds(zone);
 
-                    // Zone 边框
-                    if (zone.ShowBorder)
+                    // 功能性 Zone（点击/连接）以半透明填充 + 虚线边框显示
+                    if (zone.IsClickZone || zone.IsConnectionZone)
                     {
+                        Color fillC = Color.FromArgb(60, zone.FillColor.ToColor());
+                        using (Brush brush = new SolidBrush(fillC))
+                            g.FillRectangle(brush, zoneRect);
+
+                        using (Pen pen = new Pen(zone.BorderColor.ToColor(), 1f / scale))
+                        {
+                            pen.DashStyle = DashStyle.Dash;
+                            g.DrawRectangle(pen, zoneRect.X, zoneRect.Y, zoneRect.Width, zoneRect.Height);
+                        }
+
+                        // 连接区域绘制小圆点指示
+                        if (zone.IsConnectionZone)
+                        {
+                            float dotR = 3f / scale;
+                            float cx = zoneRect.X + zoneRect.Width / 2f;
+                            float cy = zoneRect.Y + zoneRect.Height / 2f;
+                            using (Brush dotBrush = new SolidBrush(zone.BorderColor.ToColor()))
+                                g.FillEllipse(dotBrush, cx - dotR, cy - dotR, dotR * 2, dotR * 2);
+                        }
+                    }
+                    else if (zone.ShowBorder)
+                    {
+                        // 普通显示边框的 Zone
                         using (Pen pen = new Pen(zone.BorderColor.ToColor(), 0.5f / scale))
                         {
                             pen.DashStyle = DashStyle.Dash;

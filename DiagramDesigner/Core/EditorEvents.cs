@@ -121,4 +121,32 @@ namespace DiagramDesigner.Core
             _newStateName = newStateName;
         }
     }
+
+    /// <summary>
+    /// Zone 点击事件参数。携带被点击的图形实例和 Zone 信息，
+    /// 供 DiagramEditor 响应点击区域的系统行为。
+    /// </summary>
+    public class ZoneClickEventArgs : EventArgs
+    {
+        private GenericShape _shape;
+        private ShapeZone _zone;
+
+        /// <summary>被点击的图形实例</summary>
+        public GenericShape Shape
+        {
+            get { return _shape; }
+        }
+
+        /// <summary>被点击的 Zone</summary>
+        public ShapeZone Zone
+        {
+            get { return _zone; }
+        }
+
+        public ZoneClickEventArgs(GenericShape shape, ShapeZone zone)
+        {
+            _shape = shape;
+            _zone = zone;
+        }
+    }
 }

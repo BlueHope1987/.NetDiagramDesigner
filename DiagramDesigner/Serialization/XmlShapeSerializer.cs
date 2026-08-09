@@ -250,6 +250,17 @@ namespace DiagramDesigner.Serialization
 
                     sd.States.Add(stateData);
                 }
+
+                // 序列化系统行为列表（GenericShape.SystemActions）
+                if (g.SystemActions != null)
+                {
+                    foreach (ShapeAction action in g.SystemActions)
+                    {
+                        ActionData ad = ToActionData(action);
+                        if (ad != null)
+                            sd.SystemActions.Add(ad);
+                    }
+                }
             }
 
             return sd;
@@ -346,6 +357,17 @@ namespace DiagramDesigner.Serialization
                     g.States.Add(s);
                 }
 
+                // 反序列化系统行为列表（向后兼容：空列表不影响加载）
+                if (sd.SystemActions != null)
+                {
+                    foreach (ActionData ad in sd.SystemActions)
+                    {
+                        ShapeAction action = FromActionData(ad);
+                        if (action != null)
+                            g.SystemActions.Add(action);
+                    }
+                }
+
                 shape = g;
             }
 
@@ -386,6 +408,7 @@ namespace DiagramDesigner.Serialization
             rcd.IsBold = rc.IsBold;
             rcd.PolygonPointsStr = PointsToString(rc.PolygonPoints);
             rcd.MultiPathsStr = MultiPathsToString(rc.MultiPaths);
+            rcd.PathDefsStr = PathDefsToString(rc.PathDefs);
             rcd.BoolOp = rc.BoolOp.ToString();
             rcd.UseShapeColors = rc.UseShapeColors;
             rcd.Fill = rc.Fill;
@@ -421,6 +444,7 @@ namespace DiagramDesigner.Serialization
             rc.IsBold = rcd.IsBold;
             rc.PolygonPoints = ParsePoints(rcd.PolygonPointsStr);
             rc.MultiPaths = ParseMultiPaths(rcd.MultiPathsStr);
+            rc.PathDefs = ParsePathDefs(rcd.PathDefsStr);
 
             try
             {
@@ -457,6 +481,14 @@ namespace DiagramDesigner.Serialization
             zd.Title = zone.Title;
             zd.IsTitleZone = zone.IsTitleZone;
             zd.IsMemberZone = zone.IsMemberZone;
+            zd.Anchor = zone.Anchor.ToString();
+            zd.ArgbFillColor = zone.FillColor.Argb;
+            zd.IsClickZone = zone.IsClickZone;
+            zd.IsConnectionZone = zone.IsConnectionZone;
+            zd.CanStart = zone.CanStart;
+            zd.CanEnd = zone.CanEnd;
+            zd.AllowedLineTypes = zone.AllowedLineTypes;
+            zd.AllowSelfConnect = zone.AllowSelfConnect;
             return zd;
         }
 
@@ -493,7 +525,94 @@ namespace DiagramDesigner.Serialization
             zone.Title = zd.Title;
             zone.IsTitleZone = zd.IsTitleZone;
             zone.IsMemberZone = zd.IsMemberZone;
+
+            try
+            {
+                zone.Anchor = (ZoneAnchor)Enum.Parse(typeof(ZoneAnchor), zd.Anchor);
+            }
+            catch
+            {
+                zone.Anchor = ZoneAnchor.Absolute;
+            }
+
+            zone.FillColor = new XmlColor(Color.FromArgb(zd.ArgbFillColor));
+            zone.IsClickZone = zd.IsClickZone;
+            zone.IsConnectionZone = zd.IsConnectionZone;
+            zone.CanStart = zd.CanStart;
+            zone.CanEnd = zd.CanEnd;
+            zone.AllowedLineTypes = zd.AllowedLineTypes;
+            zone.AllowSelfConnect = zd.AllowSelfConnect;
             return zone;
+        }
+
+        // =====================================================================
+        // ShapeAction <-> ActionData 转换（含子操作递归序列化）
+        // 适用于 SystemActions 与 CustomActions，统一处理新字段
+        // （IsSystemBehavior、ZoneName、SubActions）。
+        // =====================================================================
+
+        /// <summary>将 ShapeAction 转换为可序列化的 ActionData（递归处理子操作）。</summary>
+        private static ActionData ToActionData(ShapeAction action)
+        {
+            if (action == null)
+                return null;
+
+            ActionData ad = new ActionData();
+            ad.Name = action.Name;
+            ad.IconName = action.IconName;
+            ad.ActionType = action.ActionType.ToString();
+            ad.CallbackName = action.CallbackName;
+            ad.TargetState = action.TargetState;
+            ad.IsSystemBehavior = action.IsSystemBehavior;
+            ad.ZoneName = action.ZoneName;
+
+            if (action.SubActions != null)
+            {
+                foreach (ShapeAction sub in action.SubActions)
+                {
+                    ActionData subAd = ToActionData(sub);
+                    if (subAd != null)
+                        ad.SubActions.Add(subAd);
+                }
+            }
+            return ad;
+        }
+
+        /// <summary>将 ActionData 还原为 ShapeAction（递归还原子操作）。</summary>
+        private static ShapeAction FromActionData(ActionData ad)
+        {
+            if (ad == null)
+                return null;
+
+            ShapeAction action = new ShapeAction();
+            action.Name = ad.Name;
+            action.IconName = ad.IconName;
+
+            try
+            {
+                action.ActionType = (ShapeActionType)Enum.Parse(
+                    typeof(ShapeActionType), ad.ActionType);
+            }
+            catch
+            {
+                action.ActionType = ShapeActionType.HostCallback;
+            }
+
+            action.CallbackName = ad.CallbackName;
+            action.TargetState = ad.TargetState;
+            action.IsSystemBehavior = ad.IsSystemBehavior;
+            action.ZoneName = ad.ZoneName;
+
+            if (ad.SubActions != null)
+            {
+                foreach (ActionData subAd in ad.SubActions)
+                {
+                    ShapeAction sub = FromActionData(subAd);
+                    if (sub != null)
+                        action.SubActions.Add(sub);
+                }
+            }
+            return action;
         }
 
         // =====================================================================
@@ -602,6 +721,145 @@ namespace DiagramDesigner.Serialization
             if (result.Count == 0)
                 return null;
             return result;
+        }
+
+        // =====================================================================
+        // PathDef 列表的字符串编解码辅助方法
+        // 每条路径拥有独立的 BoolOp。
+        // 格式: "x1,y1|x2,y2;BoolOp|x3,y3;BoolOp2|..."
+        //   - 顶点之间以 '|' 分隔
+        //   - x,y 之间以 ',' 分隔
+        //   - 路径的顶点与其 BoolOp 以 ';' 分隔
+        //   - 路径之间以 '|' 分隔
+        // =====================================================================
+
+        /// <summary>
+        /// 将 List&lt;PathDef&gt; 编码为字符串。
+        /// 每条路径编码为 "x1,y1|x2,y2|...;BoolOp"，路径之间以 '|' 连接。
+        /// </summary>
+        private static string PathDefsToString(List<PathDef> defs)
+        {
+            if (defs == null || defs.Count == 0)
+                return "";
+
+            List<string> pathStrs = new List<string>();
+            foreach (PathDef def in defs)
+            {
+                if (def == null)
+                    continue;
+                string pts = PointsToPipeString(def.Points);
+                pathStrs.Add(pts + ";" + def.BoolOp.ToString());
+            }
+
+            if (pathStrs.Count == 0)
+                return "";
+            return string.Join("|", pathStrs.ToArray());
+        }
+
+        /// <summary>
+        /// 将 "x1,y1|x2,y2;BoolOp|..." 字符串解码为 List&lt;PathDef&gt;。
+        /// 解析失败时返回 null，保证向后兼容。
+        /// </summary>
+        private static List<PathDef> ParsePathDefs(string s)
+        {
+            if (string.IsNullOrEmpty(s))
+                return null;
+
+            string[] tokens = s.Split('|');
+            List<PathDef> result = new List<PathDef>();
+            List<PointF> current = new List<PointF>();
+
+            for (int i = 0; i < tokens.Length; i++)
+            {
+                string token = tokens[i].Trim();
+                if (token.Length == 0)
+                    continue;
+
+                string pointPart = token;
+                string boolOpPart = "";
+
+                int sep = token.IndexOf(';');
+                if (sep >= 0)
+                {
+                    pointPart = token.Substring(0, sep);
+                    boolOpPart = token.Substring(sep + 1);
+                }
+
+                PointF pt;
+                if (TryParsePoint(pointPart, out pt))
+                    current.Add(pt);
+
+                // 遇到 ';' 表示该路径结束，附带其 BoolOp
+                if (sep >= 0)
+                {
+                    BooleanOperation op = BooleanOperation.None;
+                    try
+                    {
+                        op = (BooleanOperation)Enum.Parse(
+                            typeof(BooleanOperation), boolOpPart.Trim());
+                    }
+                    catch
+                    {
+                        op = BooleanOperation.None;
+                    }
+
+                    if (current.Count > 0)
+                        result.Add(new PathDef(current.ToArray(), op));
+                    current.Clear();
+                }
+            }
+
+            if (result.Count == 0)
+                return null;
+            return result;
+        }
+
+        /// <summary>
+        /// 将 PointF[] 编码为 "x1,y1|x2,y2|..." 字符串（顶点以 '|' 分隔）。
+        /// 使用 InvariantCulture 保证小数点为 "."。
+        /// </summary>
+        private static string PointsToPipeString(PointF[] points)
+        {
+            if (points == null || points.Length == 0)
+                return "";
+
+            string[] parts = new string[points.Length];
+            for (int i = 0; i < points.Length; i++)
+            {
+                parts[i] = points[i].X.ToString(CultureInfo.InvariantCulture)
+                    + "," + points[i].Y.ToString(CultureInfo.InvariantCulture);
+            }
+            return string.Join("|", parts);
+        }
+
+        /// <summary>
+        /// 尝试将 "x,y" 解析为单个 PointF。
+        /// 解析失败返回 false，保证向后兼容。
+        /// </summary>
+        private static bool TryParsePoint(string s, out PointF pt)
+        {
+            pt = PointF.Empty;
+            if (s == null)
+                return false;
+            string trimmed = s.Trim();
+            if (trimmed.Length == 0)
+                return false;
+
+            string[] xy = trimmed.Split(',');
+            if (xy.Length < 2)
+                return false;
+
+            float x;
+            float y;
+            if (float.TryParse(xy[0].Trim(), NumberStyles.Float,
+                    CultureInfo.InvariantCulture, out x)
+                && float.TryParse(xy[1].Trim(), NumberStyles.Float,
+                    CultureInfo.InvariantCulture, out y))
+            {
+                pt = new PointF(x, y);
+                return true;
+            }
+            return false;
         }
     }
 }

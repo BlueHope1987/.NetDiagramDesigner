@@ -1018,6 +1018,8 @@ namespace DiagramDesigner.Core
         {
             ShapeType t = CreateBase("包", "UML", Color.FromArgb(250, 250, 245), Color.FromArgb(140, 140, 100), 180, 140);
             t.SupportsMembers = false;
+            t.NameAlignment = NameAlignment.TopLeft;
+            t.NameAreaTop = 0.18f;
             t.RenderCommands.Add(PolygonCmd(new PointF[] {
                 new PointF(0f, 0f), new PointF(0.4f, 0f),
                 new PointF(0.4f, 0.18f), new PointF(1f, 0.18f),

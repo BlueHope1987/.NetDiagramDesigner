@@ -59,6 +59,7 @@ namespace DiagramDesigner.Core
         // === 多路径与布尔运算 ===
         private List<PointF[]> _multiPaths = null;
         private BooleanOperation _boolOp = BooleanOperation.None;
+        private List<PathDef> _pathDefs = null;
 
         public RenderCommandType CommandType
         {
@@ -173,12 +174,23 @@ namespace DiagramDesigner.Core
         }
 
         /// <summary>
-        /// 布尔运算类型。仅当 CommandType 为 CompoundPolygon 时使用。
+        /// 布尔运算类型。仅当 CommandType 为 CompoundPolygon 且 PathDefs 为空时使用（全局布尔运算）。
         /// </summary>
         public BooleanOperation BoolOp
         {
             get { return _boolOp; }
             set { _boolOp = value; }
+        }
+
+        /// <summary>
+        /// 路径定义列表。每条路径拥有独立的 BoolOp，
+        /// 仅与紧邻的下层路径计算（邻居模式）。
+        /// 优先于 MultiPaths + BoolOp 使用。
+        /// </summary>
+        public List<PathDef> PathDefs
+        {
+            get { return _pathDefs; }
+            set { _pathDefs = value; }
         }
 
         public void Execute(Graphics g, RectangleF bounds, ShapeColors colors, float scale)
@@ -302,97 +314,148 @@ namespace DiagramDesigner.Core
         }
 
         /// <summary>
-        /// 绘制复合多路径图形。支持布尔运算组合多条封闭路径。
+        /// 绘制复合多路径图形。支持逐路径布尔运算（邻居模式）。
+        /// 每条路径的 BoolOp 仅与紧邻的下层路径计算。
         /// </summary>
         private void DrawCompoundPolygon(Graphics g, RectangleF rect, ShapeColors colors, Color stroke, float scale)
         {
-            if (_multiPaths == null || _multiPaths.Count == 0)
+            // 获取有效的路径定义列表
+            List<PathDef> defs = GetEffectivePathDefs();
+            if (defs == null || defs.Count == 0)
                 return;
 
-            // 将归一化路径转换为绝对坐标路径
+            // 将归一化路径转换为绝对坐标 GraphicsPath
             List<GraphicsPath> absPaths = new List<GraphicsPath>();
-            foreach (PointF[] pathPts in _multiPaths)
+            foreach (PathDef def in defs)
             {
-                if (pathPts == null || pathPts.Length < 3)
+                if (def.Points == null || def.Points.Length < 3 || !def.Visible)
+                {
+                    absPaths.Add(null); // 占位，保持索引对齐
                     continue;
-                PointF[] pts = new PointF[pathPts.Length];
-                for (int i = 0; i < pathPts.Length; i++)
+                }
+                PointF[] pts = new PointF[def.Points.Length];
+                for (int i = 0; i < def.Points.Length; i++)
                 {
                     pts[i] = new PointF(
-                        rect.X + pathPts[i].X * rect.Width,
-                        rect.Y + pathPts[i].Y * rect.Height);
+                        rect.X + def.Points[i].X * rect.Width,
+                        rect.Y + def.Points[i].Y * rect.Height);
                 }
                 GraphicsPath gp = new GraphicsPath();
                 gp.AddPolygon(pts);
                 absPaths.Add(gp);
             }
 
-            if (absPaths.Count == 0)
-                return;
+            // 邻居模式布尔运算：每条路径的 BoolOp 仅与紧邻下层路径计算
+            // renderItems: 每项含 (路径索引, Region)
+            List<Region> renderRegions = new List<Region>();
+            List<int> regionPathIndices = new List<int>();
 
-            if (_boolOp == BooleanOperation.None || absPaths.Count == 1)
+            for (int i = 0; i < absPaths.Count; i++)
             {
-                // 无布尔运算：各路径独立绘制
-                if (_fill)
+                if (absPaths[i] == null)
+                    continue;
+
+                BooleanOperation op = (i == 0) ? BooleanOperation.None : defs[i].BoolOp;
+
+                if (op == BooleanOperation.None || op == BooleanOperation.Union)
                 {
-                    using (Brush brush = CreateFillBrush(rect, colors))
+                    // 独立路径：添加为新的渲染区域
+                    renderRegions.Add(new Region(absPaths[i]));
+                    regionPathIndices.Add(i);
+                }
+                else
+                {
+                    // Subtract/Intersect/Xor：查找紧邻下层路径的渲染区域
+                    int targetIdx = -1;
+                    for (int r = regionPathIndices.Count - 1; r >= 0; r--)
                     {
-                        foreach (GraphicsPath gp in absPaths)
-                            g.FillPath(brush, gp);
+                        if (regionPathIndices[r] == i - 1)
+                        {
+                            targetIdx = r;
+                            break;
+                        }
+                    }
+
+                    if (targetIdx >= 0)
+                    {
+                        // 对紧邻下层路径的区域应用布尔运算
+                        Region target = renderRegions[targetIdx];
+                        switch (op)
+                        {
+                            case BooleanOperation.Subtract:
+                                target.Exclude(absPaths[i]);
+                                break;
+                            case BooleanOperation.Intersect:
+                                target.Intersect(absPaths[i]);
+                                break;
+                            case BooleanOperation.Xor:
+                                target.Xor(absPaths[i]);
+                                break;
+                        }
+                    }
+                    else
+                    {
+                        // 紧邻下层路径无渲染区域（被消费或为空），
+                        // 按独立路径处理
+                        renderRegions.Add(new Region(absPaths[i]));
+                        regionPathIndices.Add(i);
                     }
                 }
-                if (_stroke)
+            }
+
+            // 填充所有渲染区域
+            if (_fill)
+            {
+                using (Brush brush = CreateFillBrush(rect, colors))
                 {
-                    using (Pen pen = new Pen(stroke, _strokeWidth / scale))
+                    foreach (Region r in renderRegions)
+                        g.FillRegion(brush, r);
+                }
+            }
+
+            // 描边：绘制所有原始路径的轮廓
+            if (_stroke)
+            {
+                using (Pen pen = new Pen(stroke, _strokeWidth / scale))
+                {
+                    foreach (GraphicsPath gp in absPaths)
                     {
-                        foreach (GraphicsPath gp in absPaths)
+                        if (gp != null)
                             g.DrawPath(pen, gp);
                     }
                 }
             }
-            else
-            {
-                // 布尔运算：使用 Region 合并路径
-                Region resultRegion = new Region(absPaths[0]);
-                for (int i = 1; i < absPaths.Count; i++)
-                {
-                    switch (_boolOp)
-                    {
-                        case BooleanOperation.Union:
-                            resultRegion.Union(absPaths[i]);
-                            break;
-                        case BooleanOperation.Subtract:
-                            resultRegion.Exclude(absPaths[i]);
-                            break;
-                        case BooleanOperation.Intersect:
-                            resultRegion.Intersect(absPaths[i]);
-                            break;
-                        case BooleanOperation.Xor:
-                            resultRegion.Xor(absPaths[i]);
-                            break;
-                    }
-                }
 
-                if (_fill)
-                {
-                    using (Brush brush = CreateFillBrush(rect, colors))
-                        g.FillRegion(brush, resultRegion);
-                }
-                if (_stroke)
-                {
-                    // Region 不直接支持描边，改为绘制各子路径的轮廓
-                    using (Pen pen = new Pen(stroke, _strokeWidth / scale))
-                    {
-                        foreach (GraphicsPath gp in absPaths)
-                            g.DrawPath(pen, gp);
-                    }
-                }
-                resultRegion.Dispose();
-            }
-
-            // 释放临时路径
+            // 释放临时资源
+            foreach (Region r in renderRegions)
+                r.Dispose();
             foreach (GraphicsPath gp in absPaths)
-                gp.Dispose();
+            {
+                if (gp != null)
+                    gp.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// 获取有效的路径定义列表。
+        /// 优先使用 PathDefs，其次从 MultiPaths + BoolOp 转换。
+        /// </summary>
+        private List<PathDef> GetEffectivePathDefs()
+        {
+            if (_pathDefs != null && _pathDefs.Count > 0)
+                return _pathDefs;
+
+            if (_multiPaths == null || _multiPaths.Count == 0)
+                return null;
+
+            // 从 MultiPaths + 全局 BoolOp 转换
+            List<PathDef> defs = new List<PathDef>();
+            for (int i = 0; i < _multiPaths.Count; i++)
+            {
+                BooleanOperation op = (i == 0) ? BooleanOperation.None : _boolOp;
+                defs.Add(new PathDef(_multiPaths[i], op));
+            }
+            return defs;
         }
 
         private void DrawLine(Graphics g, RectangleF rect, Color stroke, float scale)
@@ -471,6 +534,12 @@ namespace DiagramDesigner.Core
                         c._multiPaths.Add(copy);
                     }
                 }
+            }
+            if (_pathDefs != null)
+            {
+                c._pathDefs = new List<PathDef>();
+                foreach (PathDef def in _pathDefs)
+                    c._pathDefs.Add(def.Clone());
             }
             return c;
         }

@@ -5,3 +5,7 @@
 /.vs
 /bin/Debug
 /obj
+/DiagramDesigner/bin
+/DiagramDesigner/obj
+/DemoApp/bin
+/DemoApp/obj

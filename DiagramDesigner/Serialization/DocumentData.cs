@@ -85,6 +85,7 @@ namespace DiagramDesigner.Serialization
         private List<ZoneData> _zones = new List<ZoneData>();
         private float _refWidth = 140f;
         private float _refHeight = 100f;
+        private List<ActionData> _systemActions = new List<ActionData>();
 
         public string ShapeClass
         {
@@ -253,6 +254,83 @@ namespace DiagramDesigner.Serialization
             get { return _refHeight; }
             set { _refHeight = value; }
         }
+
+        /// <summary>
+        /// 系统行为列表（对应 GenericShape.SystemActions）。
+        /// 旧文件没有该字段时为空列表，不影响加载。
+        /// </summary>
+        public List<ActionData> SystemActions
+        {
+            get { return _systemActions; }
+            set { _systemActions = value; }
+        }
+    }
+
+    /// <summary>
+    /// ShapeAction 的可序列化数据载体。支持子操作递归序列化。
+    /// 枚举以字符串形式存储，保证向后兼容。
+    /// </summary>
+    [Serializable]
+    public class ActionData
+    {
+        private string _name = "";
+        private string _iconName = "";
+        private string _actionType = "HostCallback";
+        private string _callbackName = "";
+        private string _targetState = "";
+        private bool _isSystemBehavior = false;
+        private string _zoneName = "";
+        private List<ActionData> _subActions = new List<ActionData>();
+
+        public string Name
+        {
+            get { return _name; }
+            set { _name = value; }
+        }
+
+        public string IconName
+        {
+            get { return _iconName; }
+            set { _iconName = value; }
+        }
+
+        /// <summary>ShapeActionType 枚举的字符串形式</summary>
+        public string ActionType
+        {
+            get { return _actionType; }
+            set { _actionType = value; }
+        }
+
+        public string CallbackName
+        {
+            get { return _callbackName; }
+            set { _callbackName = value; }
+        }
+
+        public string TargetState
+        {
+            get { return _targetState; }
+            set { _targetState = value; }
+        }
+
+        public bool IsSystemBehavior
+        {
+            get { return _isSystemBehavior; }
+            set { _isSystemBehavior = value; }
+        }
+
+        public string ZoneName
+        {
+            get { return _zoneName; }
+            set { _zoneName = value; }
+        }
+
+        /// <summary>子操作序列（递归序列化）</summary>
+        public List<ActionData> SubActions
+        {
+            get { return _subActions; }
+            set { _subActions = value; }
+        }
     }
 
     [Serializable]
@@ -361,6 +439,14 @@ namespace DiagramDesigner.Serialization
         private string _title = "";
         private bool _isTitleZone = false;
         private bool _isMemberZone = false;
+        private string _anchor = "Absolute";
+        private int _argbFillColor = Color.FromArgb(255, 248, 220, 220).ToArgb();
+        private bool _isClickZone = false;
+        private bool _isConnectionZone = false;
+        private bool _canStart = true;
+        private bool _canEnd = true;
+        private string _allowedLineTypes = "Straight,Curve,Orthogonal";
+        private bool _allowSelfConnect = false;
 
         public string Name
         {
@@ -435,6 +521,56 @@ namespace DiagramDesigner.Serialization
             get { return _isMemberZone; }
             set { _isMemberZone = value; }
         }
+
+        /// <summary>ZoneAnchor 枚举的字符串形式</summary>
+        public string Anchor
+        {
+            get { return _anchor; }
+            set { _anchor = value; }
+        }
+
+        /// <summary>Zone 填充颜色（ARGB int）</summary>
+        public int ArgbFillColor
+        {
+            get { return _argbFillColor; }
+            set { _argbFillColor = value; }
+        }
+
+        public bool IsClickZone
+        {
+            get { return _isClickZone; }
+            set { _isClickZone = value; }
+        }
+
+        public bool IsConnectionZone
+        {
+            get { return _isConnectionZone; }
+            set { _isConnectionZone = value; }
+        }
+
+        public bool CanStart
+        {
+            get { return _canStart; }
+            set { _canStart = value; }
+        }
+
+        public bool CanEnd
+        {
+            get { return _canEnd; }
+            set { _canEnd = value; }
+        }
+
+        public string AllowedLineTypes
+        {
+            get { return _allowedLineTypes; }
+            set { _allowedLineTypes = value; }
+        }
+
+        public bool AllowSelfConnect
+        {
+            get { return _allowSelfConnect; }
+            set { _allowSelfConnect = value; }
+        }
     }
 
     /// <summary>
@@ -464,6 +600,7 @@ namespace DiagramDesigner.Serialization
         private bool _useShapeColors = true;
         private bool _fill = true;
         private bool _stroke = true;
+        private string _pathDefsStr = "";
 
         /// <summary>RenderCommandType 枚举的字符串形式</summary>
         public string CommandType
@@ -586,6 +723,18 @@ namespace DiagramDesigner.Serialization
         {
             get { return _stroke; }
             set { _stroke = value; }
+        }
+
+        /// <summary>
+        /// PathDefs（List&lt;PathDef&gt;）的字符串形式，
+        /// 格式 "x1,y1|x2,y2;BoolOp|x3,y3;BoolOp2|..."。
+        /// 每条路径的顶点以 '|' 分隔，路径与其 BoolOp 以 ';' 分隔，
+        /// 路径之间以 '|' 分隔。每条路径拥有独立的 BoolOp。
+        /// </summary>
+        public string PathDefsStr
+        {
+            get { return _pathDefsStr; }
+            set { _pathDefsStr = value; }
         }
     }
 

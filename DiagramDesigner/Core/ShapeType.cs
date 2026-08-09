@@ -182,6 +182,11 @@ namespace DiagramDesigner.Core
         /// <summary>
         /// 确保该 ShapeType 拥有默认的标题 Zone 和（若支持成员）成员 Zone。
         /// 若已有同名的 Zone 则不重复创建。
+        /// 标题 Zone 的锚定方式由 NameAlignment 决定：
+        ///   Center（默认）→ MiddleCenter，适用于大多数图形
+        ///   TopCenter     → TopCenter + 向下偏移，适用于类图等
+        ///   TopLeft       → TopLeft + 向内偏移，适用于包图等
+        /// 容器（IsContainer=true）默认使用 TopCenter。
         /// </summary>
         public void EnsureDefaultZones()
         {
@@ -197,7 +202,14 @@ namespace DiagramDesigner.Core
             }
             if (!hasTitleZone)
             {
-                _zones.Insert(0, ShapeZone.CreateDefaultTitleZone(_nameAreaTop));
+                ShapeZone titleZone;
+                if (_nameAlignment == NameAlignment.TopLeft)
+                    titleZone = ShapeZone.CreateTopLeftTitleZone(_nameAreaTop);
+                else if (_nameAlignment == NameAlignment.TopCenter || _isContainer)
+                    titleZone = ShapeZone.CreateTopTitleZone(_nameAreaTop);
+                else
+                    titleZone = ShapeZone.CreateDefaultTitleZone(_nameAreaTop);
+                _zones.Insert(0, titleZone);
             }
 
             // 若支持成员且有成员区，确保有成员 Zone
@@ -215,6 +227,58 @@ namespace DiagramDesigner.Core
                 if (!hasMemberZone)
                 {
                     _zones.Add(ShapeZone.CreateDefaultMemberZone(_nameAreaTop));
+                }
+            }
+        }
+
+        /// <summary>
+        /// 根据 Zone 列表生成系统行为。
+        /// 标题 Zone → InlineEditTitle 行为（设计时）
+        /// 成员 Zone → AddMember / DeleteMember 行为（设计时 + 运行时）
+        /// 点击 Zone → ZoneClick 行为
+        /// 连接 Zone → ZoneConnect 行为
+        /// 系统行为不可删除，可切换显隐。
+        /// </summary>
+        public void GenerateSystemBehaviors()
+        {
+            // 移除已有的系统行为（根据 ZoneName 匹配）
+            for (int i = _customActions.Count - 1; i >= 0; i--)
+            {
+                if (_customActions[i].IsSystemBehavior && _customActions[i].ZoneName.Length > 0)
+                    _customActions.RemoveAt(i);
+            }
+
+            EnsureDefaultZones();
+
+            foreach (ShapeZone zone in _zones)
+            {
+                if (zone.IsTitleZone)
+                {
+                    ShapeAction a = ShapeAction.CreateSystemBehavior(
+                        "编辑标题", ShapeActionType.InlineEditTitle, zone.Name, "edit.png");
+                    _customActions.Add(a);
+                }
+                else if (zone.IsMemberZone)
+                {
+                    ShapeAction addMem = ShapeAction.CreateSystemBehavior(
+                        "添加成员", ShapeActionType.AddMember, zone.Name, "add_member.png");
+                    _customActions.Add(addMem);
+
+                    ShapeAction delMem = ShapeAction.CreateSystemBehavior(
+                        "删除成员", ShapeActionType.DeleteMember, zone.Name, "delete.png");
+                    _customActions.Add(delMem);
+                }
+                else if (zone.IsClickZone)
+                {
+                    ShapeAction a = ShapeAction.CreateSystemBehavior(
+                        "点击: " + zone.Name, ShapeActionType.ZoneClick, zone.Name, "");
+                    _customActions.Add(a);
+                }
+                else if (zone.IsConnectionZone)
+                {
+                    ShapeAction a = ShapeAction.CreateSystemBehavior(
+                        "连接: " + zone.Name, ShapeActionType.ZoneConnect, zone.Name, "");
+                    _customActions.Add(a);
                 }
             }
         }
@@ -250,6 +314,13 @@ namespace DiagramDesigner.Core
                 foreach (ShapeZone zone in _zones)
                 {
                     shape.Zones.Add(zone.Clone());
+                }
+
+                // 生成系统行为并传递给实例
+                GenerateSystemBehaviors();
+                foreach (ShapeAction action in _customActions)
+                {
+                    shape.SystemActions.Add(action.Clone());
                 }
 
                 foreach (ShapeState state in _defaultStates)

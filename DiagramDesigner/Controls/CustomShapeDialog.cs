@@ -10,6 +10,8 @@ namespace DiagramDesigner.Controls
     /// <summary>
     /// 自定义图形构建器（带状态和行为编辑）。
     /// 状态选项卡内联编辑：左侧状态列表+管理按钮，右侧图形编辑器（工具栏+画布）。
+    /// 路径下拉菜单集成区域管理，支持路径层叠顺序调整和逐路径布尔运算。
+    /// 底部信息窗格提供上下文相关的操作提示。
     /// </summary>
     public class CustomShapeDialog : Form
     {
@@ -19,6 +21,7 @@ namespace DiagramDesigner.Controls
         private Button _btnOk;
         private Button _btnCancel;
         private ColorDialog _colorDialog;
+        private ToolTip toolTip1 = new ToolTip();
 
         // === 状态选项卡 — 左侧 ===
         private ListBox _listStates;
@@ -52,21 +55,28 @@ namespace DiagramDesigner.Controls
         private ComboBox _cmbPathSelect;
         private Button _btnNewPath;
         private Button _btnDeletePath;
-        private ComboBox _cmbBoolOp;
+        private Button _btnMovePathUp;
+        private Button _btnMovePathDown;
+        private Button _btnAddZoneTB;
+        private Button _btnEditZoneTB;
+        private Button _btnDeleteZoneTB;
+        private Button _btnBoolOp;
+        private ContextMenuStrip _boolOpMenu;
         private bool _suppressPathChange = false;
 
-        // Zone 编辑控件
-        private GroupBox _grpZones;
-        private ListBox _listZones;
-        private Button _btnAddZone;
-        private Button _btnEditZone;
-        private Button _btnDeleteZone;
+        // Zone 列表（每个状态独立）
         private List<ShapeZone> _zones = new List<ShapeZone>();
 
-        // 编辑器画布数据（多路径）
+        // 信息窗格
+        private Panel _panelInfo;
+        private Label _lblInfo;
+        private Timer _infoTimer;
+        private int _infoTipIndex = 0;
+
+        // 编辑器画布数据（多路径 + 逐路径布尔运算）
         private List<List<PointF>> _paths = new List<List<PointF>>();
+        private List<BooleanOperation> _pathBoolOps = new List<BooleanOperation>();
         private int _currentPathIndex = 0;
-        private BooleanOperation _boolOp = BooleanOperation.None;
         private int _dragIndex = -1;
         private int _selectedVertex = -1;
         private bool _closedPath = false;
@@ -78,10 +88,16 @@ namespace DiagramDesigner.Controls
         private Color _stateTextColor = Color.FromArgb(40, 40, 40);
         private Color _stateHeaderColor = Color.FromArgb(80, 130, 180);
 
+        // Zone 选中与拖拽状态
+        private int _selectedZoneIndex = -1;  // -1 表示未选中 Zone（路径编辑模式）
+        private int _zoneDragMode = 0;        // 0=无, 1=移动, 2=调整大小
+        private int _zoneDragHandle = -1;     // 拖拽的手柄索引 (0~3 for corners)
+        private Point _zoneDragStart;
+
         /// <summary>当前正在编辑的状态索引，-1 表示无选择</summary>
         private int _editingStateIndex = -1;
 
-        /// <summary>抑制状态列表 SelectedIndexChanged 事件的标志，用于 RefreshStateList 期间避免事件级联</summary>
+        /// <summary>抑制状态列表 SelectedIndexChanged 事件的标志</summary>
         private bool _suppressStateChange = false;
 
         // === 行为选项卡 ===
@@ -96,6 +112,19 @@ namespace DiagramDesigner.Controls
 
         private const string DefaultStateName = "默认";
 
+        // 信息窗格提示文本
+        private static readonly string[] _infoTips = new string[]
+        {
+            "提示：在画布上点击可添加顶点，拖拽顶点可调整位置，双击顶点可删除。",
+            "提示：路径下拉菜单中区域（◈）始终显示在路径（▲）之上。选择区域可在画布中拖拽边角调整宽高。",
+            "提示：每条路径的布尔运算仅与紧邻的下层路径计算，依次逐层叠加显示组合结果。底层路径运算始终为无。",
+            "提示：标题区域默认垂直居中水平居中，类图/包图/容器等需容纳内容的图形默认顶部对齐。",
+            "提示：添加标题区域后自动注册\"编辑标题\"行为（设计时）；添加成员区域后自动注册\"添加/删除成员\"行为（设计时+运行时）。",
+            "提示：点击区域和连接区域为特殊功能区域，添加后自动注册对应的系统行为。连接区域可限定线型和自连。",
+            "提示：行为选项卡中的系统行为由区域自动注册，不可删除但可在右键菜单中隐藏。",
+            "提示：行为类型选择\"行为序列\"可包含多个子操作（状态切换、宿主回调），按序执行。"
+        };
+
         public CustomShapeDialog() : this(null) { }
 
         public CustomShapeDialog(ShapeType editShape)
@@ -104,7 +133,7 @@ namespace DiagramDesigner.Controls
             this.StartPosition = FormStartPosition.CenterParent;
             this.FormBorderStyle = FormBorderStyle.SizableToolWindow;
             this.MaximizeBox = false;
-            this.ClientSize = new Size(720, 640);
+            this.ClientSize = new Size(720, 540);
 
             _colorDialog = new ColorDialog();
 
@@ -122,7 +151,7 @@ namespace DiagramDesigner.Controls
 
             _tabControl = new TabControl();
             _tabControl.Location = new Point(10, 40);
-            _tabControl.Size = new Size(690, 550);
+            _tabControl.Size = new Size(690, 460);
             this.Controls.Add(_tabControl);
 
             BuildStateTab();
@@ -131,14 +160,14 @@ namespace DiagramDesigner.Controls
             _btnOk = new Button();
             _btnOk.Text = "确定";
             _btnOk.DialogResult = DialogResult.OK;
-            _btnOk.Location = new Point(520, 600);
+            _btnOk.Location = new Point(520, 505);
             _btnOk.Size = new Size(80, 30);
             this.Controls.Add(_btnOk);
 
             _btnCancel = new Button();
             _btnCancel.Text = "取消";
             _btnCancel.DialogResult = DialogResult.Cancel;
-            _btnCancel.Location = new Point(610, 600);
+            _btnCancel.Location = new Point(610, 505);
             _btnCancel.Size = new Size(80, 30);
             this.Controls.Add(_btnCancel);
 
@@ -154,7 +183,7 @@ namespace DiagramDesigner.Controls
                 RefreshStateList();
             }
 
-            // 初始加载第一个状态到编辑器（抑制事件，手动加载）
+            // 初始加载第一个状态到编辑器
             if (_listStates.Items.Count > 0)
             {
                 _suppressStateChange = true;
@@ -166,6 +195,9 @@ namespace DiagramDesigner.Controls
 
             UpdateStateButtons();
             UpdateActionButtons();
+
+            // 启动信息窗格轮播
+            StartInfoTimer();
         }
 
         private List<RenderCommand> BuildDefaultTriangleCommands()
@@ -294,7 +326,6 @@ namespace DiagramDesigner.Controls
             page.Controls.Add(_btnClosePath);
             tbX += tbBtnW + tbGap;
 
-            // 分隔
             tbX += 6;
 
             _btnFillColor = MakeColorButton("填", "状态填充色", tbX, toolbarY, tbBtnW, tbBtnH);
@@ -317,7 +348,6 @@ namespace DiagramDesigner.Controls
             page.Controls.Add(_btnHeaderColor);
             tbX += tbBtnW + tbGap;
 
-            // 分隔
             tbX += 6;
 
             _btnCopyDefault = MakeSmallButton("CP", "复制初始图形", tbX, toolbarY, tbBtnW + 10, tbBtnH);
@@ -329,58 +359,13 @@ namespace DiagramDesigner.Controls
             _btnClearGeom.Click += new EventHandler(OnClearGeom);
             page.Controls.Add(_btnClearGeom);
 
-            // 第三行：多路径工具栏（路径切换 / 新建 / 删除 + 布尔运算）
-            _panelPathToolbar = new Panel();
-            _panelPathToolbar.Location = new Point(rightX, 62);
-            _panelPathToolbar.Size = new Size(485, 26);
-            page.Controls.Add(_panelPathToolbar);
-
-            Label lblPath = new Label();
-            lblPath.Text = "路径：";
-            lblPath.Location = new Point(0, 4);
-            lblPath.Size = new Size(34, 20);
-            lblPath.TextAlign = System.Drawing.ContentAlignment.MiddleRight;
-            _panelPathToolbar.Controls.Add(lblPath);
-
-            _cmbPathSelect = new ComboBox();
-            _cmbPathSelect.DropDownStyle = ComboBoxStyle.DropDownList;
-            _cmbPathSelect.Location = new Point(34, 2);
-            _cmbPathSelect.Size = new Size(110, 22);
-            _cmbPathSelect.SelectedIndexChanged += new EventHandler(OnPathSelectedChanged);
-            _panelPathToolbar.Controls.Add(_cmbPathSelect);
-
-            _btnNewPath = MakeSmallButton("+P", "新建路径", 148, 0, 28, 24);
-            _btnNewPath.Click += new EventHandler(OnNewPath);
-            _panelPathToolbar.Controls.Add(_btnNewPath);
-
-            _btnDeletePath = MakeSmallButton("-P", "删除当前路径", 179, 0, 28, 24);
-            _btnDeletePath.Click += new EventHandler(OnDeletePath);
-            _panelPathToolbar.Controls.Add(_btnDeletePath);
-
-            Label lblBool = new Label();
-            lblBool.Text = "布尔：";
-            lblBool.Location = new Point(214, 4);
-            lblBool.Size = new Size(34, 20);
-            lblBool.TextAlign = System.Drawing.ContentAlignment.MiddleRight;
-            _panelPathToolbar.Controls.Add(lblBool);
-
-            _cmbBoolOp = new ComboBox();
-            _cmbBoolOp.DropDownStyle = ComboBoxStyle.DropDownList;
-            _cmbBoolOp.Location = new Point(248, 2);
-            _cmbBoolOp.Size = new Size(125, 22);
-            _cmbBoolOp.Items.Add("无 (独立)");
-            _cmbBoolOp.Items.Add("并集 (Union)");
-            _cmbBoolOp.Items.Add("差集 (Subtract)");
-            _cmbBoolOp.Items.Add("交集 (Intersect)");
-            _cmbBoolOp.Items.Add("异或 (Xor)");
-            _cmbBoolOp.SelectedIndex = 0;
-            _cmbBoolOp.SelectedIndexChanged += new EventHandler(OnBoolOpChanged);
-            _panelPathToolbar.Controls.Add(_cmbBoolOp);
+            // 第三行：路径/区域工具栏（单行）
+            BuildPathToolbar(page, rightX, 62);
 
             // 画布
             _canvasPanel = new Panel();
-            _canvasPanel.Location = new Point(rightX, 92);
-            _canvasPanel.Size = new Size(485, 250);
+            _canvasPanel.Location = new Point(rightX, 90);
+            _canvasPanel.Size = new Size(485, 258);
             _canvasPanel.BackColor = Color.White;
             _canvasPanel.BorderStyle = BorderStyle.FixedSingle;
             _canvasPanel.Paint += new PaintEventHandler(OnCanvasPaint);
@@ -393,58 +378,183 @@ namespace DiagramDesigner.Controls
             // 默认图形提示
             _lblDefaultHint = new Label();
             _lblDefaultHint.Text = "当前状态使用默认/初始图形。\n勾选\"自定义图形\"以绘制专属图形。";
-            _lblDefaultHint.Location = new Point(rightX, 92);
-            _lblDefaultHint.Size = new Size(485, 250);
+            _lblDefaultHint.Location = new Point(rightX, 90);
+            _lblDefaultHint.Size = new Size(485, 258);
             _lblDefaultHint.ForeColor = Color.FromArgb(120, 120, 120);
             _lblDefaultHint.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             _lblDefaultHint.BorderStyle = BorderStyle.FixedSingle;
             _lblDefaultHint.BackColor = Color.FromArgb(245, 245, 245);
             page.Controls.Add(_lblDefaultHint);
 
-            // === Zone 编辑区 ===
-            BuildZoneSection(page, rightX, 346);
+            // 信息窗格
+            BuildInfoPanel(page, rightX, 352);
 
             _tabControl.TabPages.Add(page);
         }
 
-        /// <summary>构建状态选项卡底部的 Zone 编辑区</summary>
-        private void BuildZoneSection(TabPage page, int x, int y)
+        /// <summary>
+        /// 构建路径/区域工具栏（单行布局）。
+        /// 路径下拉 + 上移/下移 + 新建/删除路径 + 布尔按钮(弹出菜单) + 添加/编辑/删除区域
+        /// 布尔运算以按钮弹出菜单方式呈现，区域模式时禁用而非隐藏。
+        /// </summary>
+        private void BuildPathToolbar(TabPage page, int x, int y)
         {
-            _grpZones = new GroupBox();
-            _grpZones.Text = "区域 (Zones)";
-            _grpZones.Location = new Point(x, y);
-            _grpZones.Size = new Size(485, 178);
-            page.Controls.Add(_grpZones);
+            _panelPathToolbar = new Panel();
+            _panelPathToolbar.Location = new Point(x, y);
+            _panelPathToolbar.Size = new Size(485, 26);
+            page.Controls.Add(_panelPathToolbar);
 
-            _listZones = new ListBox();
-            _listZones.Location = new Point(10, 20);
-            _listZones.Size = new Size(250, 145);
-            _listZones.BorderStyle = BorderStyle.FixedSingle;
-            _listZones.SelectedIndexChanged += new EventHandler(OnZoneListSelectedIndexChanged);
-            _grpZones.Controls.Add(_listZones);
+            // 路径/区域下拉（无标签，节省空间）
+            _cmbPathSelect = new ComboBox();
+            _cmbPathSelect.DropDownStyle = ComboBoxStyle.DropDownList;
+            _cmbPathSelect.Location = new Point(0, 2);
+            _cmbPathSelect.Size = new Size(140, 22);
+            _cmbPathSelect.SelectedIndexChanged += new EventHandler(OnPathSelectedChanged);
+            _panelPathToolbar.Controls.Add(_cmbPathSelect);
 
-            int bx = 270;
-            int by = 20;
-            _btnAddZone = MakeSmallButton("+Z", "添加区域", bx, by, 40, 26);
-            _btnAddZone.Click += new EventHandler(OnAddZone);
-            _grpZones.Controls.Add(_btnAddZone);
-            by += 30;
+            int bx = 144;
+            _btnMovePathUp = MakeSmallButton("↑", "上移（调整层叠顺序）", bx, 0, 24, 24);
+            _btnMovePathUp.Click += new EventHandler(OnMovePathUp);
+            _panelPathToolbar.Controls.Add(_btnMovePathUp);
+            bx += 26;
 
-            _btnEditZone = MakeSmallButton("\u270E", "编辑区域", bx, by, 40, 26);
-            _btnEditZone.Click += new EventHandler(OnEditZone);
-            _grpZones.Controls.Add(_btnEditZone);
-            by += 30;
+            _btnMovePathDown = MakeSmallButton("↓", "下移（调整层叠顺序）", bx, 0, 24, 24);
+            _btnMovePathDown.Click += new EventHandler(OnMovePathDown);
+            _panelPathToolbar.Controls.Add(_btnMovePathDown);
+            bx += 26;
 
-            _btnDeleteZone = MakeSmallButton("-Z", "删除区域", bx, by, 40, 26);
-            _btnDeleteZone.Click += new EventHandler(OnDeleteZone);
-            _grpZones.Controls.Add(_btnDeleteZone);
+            _btnNewPath = MakeSmallButton("+P", "新建路径", bx, 0, 28, 24);
+            _btnNewPath.Click += new EventHandler(OnNewPath);
+            _panelPathToolbar.Controls.Add(_btnNewPath);
+            bx += 30;
 
-            Label lblZoneHint = new Label();
-            lblZoneHint.Text = "区域定义图形内部的逻辑分区\n（标题/成员/子元件）。\n每个状态可拥有独立的 Zone 集合。";
-            lblZoneHint.Location = new Point(320, 20);
-            lblZoneHint.Size = new Size(155, 90);
-            lblZoneHint.ForeColor = Color.FromArgb(100, 100, 100);
-            _grpZones.Controls.Add(lblZoneHint);
+            _btnDeletePath = MakeSmallButton("-P", "删除当前路径", bx, 0, 28, 24);
+            _btnDeletePath.Click += new EventHandler(OnDeletePath);
+            _panelPathToolbar.Controls.Add(_btnDeletePath);
+            bx += 30;
+
+            // 布尔运算按钮（弹出菜单选择）
+            _btnBoolOp = MakeSmallButton("B", "布尔运算", bx, 0, 36, 24);
+            _btnBoolOp.Click += new EventHandler(OnBoolOpButtonClick);
+            _panelPathToolbar.Controls.Add(_btnBoolOp);
+            bx += 38;
+
+            // 区域按钮
+            _btnAddZoneTB = MakeSmallButton("+Z", "添加区域", bx, 0, 28, 24);
+            _btnAddZoneTB.Click += new EventHandler(OnAddZone);
+            _panelPathToolbar.Controls.Add(_btnAddZoneTB);
+            bx += 30;
+
+            _btnEditZoneTB = MakeSmallButton("\u270E", "编辑选中区域", bx, 0, 24, 24);
+            _btnEditZoneTB.Click += new EventHandler(OnEditZone);
+            _panelPathToolbar.Controls.Add(_btnEditZoneTB);
+            bx += 26;
+
+            _btnDeleteZoneTB = MakeSmallButton("-Z", "删除选中区域", bx, 0, 24, 24);
+            _btnDeleteZoneTB.Click += new EventHandler(OnDeleteZone);
+            _panelPathToolbar.Controls.Add(_btnDeleteZoneTB);
+
+            // 构建布尔运算弹出菜单
+            _boolOpMenu = new ContextMenuStrip();
+            _boolOpMenu.Items.Add("无 (独立)", null, new EventHandler(OnBoolOpMenuItem));
+            _boolOpMenu.Items.Add("并集 (Union)", null, new EventHandler(OnBoolOpMenuItem));
+            _boolOpMenu.Items.Add("差集 (Subtract)", null, new EventHandler(OnBoolOpMenuItem));
+            _boolOpMenu.Items.Add("交集 (Intersect)", null, new EventHandler(OnBoolOpMenuItem));
+            _boolOpMenu.Items.Add("异或 (Xor)", null, new EventHandler(OnBoolOpMenuItem));
+        }
+
+        /// <summary>布尔按钮点击：在按钮下方弹出运算菜单</summary>
+        private void OnBoolOpButtonClick(object sender, EventArgs e)
+        {
+            _boolOpMenu.Show(_btnBoolOp, new Point(0, _btnBoolOp.Height));
+        }
+
+        /// <summary>布尔运算菜单项选择</summary>
+        private void OnBoolOpMenuItem(object sender, EventArgs e)
+        {
+            ToolStripItem item = sender as ToolStripItem;
+            if (item == null)
+                return;
+            int idx = _boolOpMenu.Items.IndexOf(item);
+            if (idx < 0)
+                return;
+            BooleanOperation op = (BooleanOperation)idx;
+            if (_currentPathIndex >= 0 && _currentPathIndex < _pathBoolOps.Count)
+            {
+                _pathBoolOps[_currentPathIndex] = op;
+                UpdateBoolOpButtonText();
+                _canvasPanel.Invalidate();
+            }
+        }
+
+        /// <summary>更新布尔按钮显示当前运算类型</summary>
+        private void UpdateBoolOpButtonText()
+        {
+            if (_btnBoolOp == null)
+                return;
+            BooleanOperation op = (_currentPathIndex >= 0 && _currentPathIndex < _pathBoolOps.Count)
+                ? _pathBoolOps[_currentPathIndex] : BooleanOperation.None;
+            switch (op)
+            {
+                case BooleanOperation.None: _btnBoolOp.Text = "B"; break;
+                case BooleanOperation.Union: _btnBoolOp.Text = "B∪"; break;
+                case BooleanOperation.Subtract: _btnBoolOp.Text = "B−"; break;
+                case BooleanOperation.Intersect: _btnBoolOp.Text = "B∩"; break;
+                case BooleanOperation.Xor: _btnBoolOp.Text = "B⊕"; break;
+            }
+            // 勾选当前菜单项
+            int idx = (int)op;
+            for (int i = 0; i < _boolOpMenu.Items.Count; i++)
+            {
+                ToolStripMenuItem mi = _boolOpMenu.Items[i] as ToolStripMenuItem;
+                if (mi != null)
+                    mi.Checked = (i == idx);
+            }
+        }
+
+        /// <summary>构建底部信息窗格，提供上下文相关提示并自动轮播</summary>
+        private void BuildInfoPanel(TabPage page, int x, int y)
+        {
+            _panelInfo = new Panel();
+            _panelInfo.Location = new Point(x, y);
+            _panelInfo.Size = new Size(485, 80);
+            _panelInfo.BorderStyle = BorderStyle.FixedSingle;
+            _panelInfo.BackColor = Color.FromArgb(248, 250, 252);
+            page.Controls.Add(_panelInfo);
+
+            // 标题
+            Label lblInfoTitle = new Label();
+            lblInfoTitle.Text = " 说明";
+            lblInfoTitle.Location = new Point(0, 0);
+            lblInfoTitle.Size = new Size(485, 22);
+            lblInfoTitle.BackColor = Color.FromArgb(230, 235, 240);
+            lblInfoTitle.Font = new Font("Microsoft YaHei", 9f, FontStyle.Bold);
+            _panelInfo.Controls.Add(lblInfoTitle);
+
+            _lblInfo = new Label();
+            _lblInfo.Location = new Point(8, 26);
+            _lblInfo.Size = new Size(469, 48);
+            _lblInfo.Text = _infoTips[0];
+            _lblInfo.Font = new Font("Microsoft YaHei", 9f);
+            _lblInfo.ForeColor = Color.FromArgb(80, 80, 80);
+            _lblInfo.TextAlign = System.Drawing.ContentAlignment.TopLeft;
+            _panelInfo.Controls.Add(_lblInfo);
+        }
+
+        /// <summary>启动信息窗格轮播定时器</summary>
+        private void StartInfoTimer()
+        {
+            _infoTimer = new Timer();
+            _infoTimer.Interval = 5000;
+            _infoTimer.Tick += new EventHandler(OnInfoTimerTick);
+            _infoTimer.Start();
+        }
+
+        private void OnInfoTimerTick(object sender, EventArgs e)
+        {
+            _infoTipIndex = (_infoTipIndex + 1) % _infoTips.Length;
+            if (_lblInfo != null)
+                _lblInfo.Text = _infoTips[_infoTipIndex];
         }
 
         private Button MakeSmallButton(string text, string tooltip, int x, int y, int w, int h)
@@ -467,8 +577,6 @@ namespace DiagramDesigner.Controls
             return btn;
         }
 
-        private ToolTip toolTip1 = new ToolTip();
-
         private void BuildActionTab()
         {
             TabPage page = new TabPage("行为");
@@ -476,7 +584,7 @@ namespace DiagramDesigner.Controls
 
             _listActions = new ListBox();
             _listActions.Location = new Point(10, 10);
-            _listActions.Size = new Size(460, 340);
+            _listActions.Size = new Size(460, 400);
             _listActions.BorderStyle = BorderStyle.FixedSingle;
             _listActions.SelectedIndexChanged += new EventHandler(OnActionListSelectedIndexChanged);
             page.Controls.Add(_listActions);
@@ -509,9 +617,9 @@ namespace DiagramDesigner.Controls
             y += 44;
 
             Label lblHint = new Label();
-            lblHint.Text = "提示：\n行为定义图形在右键\n菜单中可用的操作。\n切换状态时可枚举\n选择已定义的目标状态。";
+            lblHint.Text = "提示：\n行为定义图形在右键\n菜单中可用的操作。\n系统行为由区域自动\n注册，不可删除。\n切换状态时可枚举\n选择已定义目标状态。";
             lblHint.Location = new Point(x, y);
-            lblHint.Size = new Size(110, 90);
+            lblHint.Size = new Size(110, 120);
             lblHint.ForeColor = Color.FromArgb(100, 100, 100);
             page.Controls.Add(lblHint);
 
@@ -555,16 +663,14 @@ namespace DiagramDesigner.Controls
 
             RefreshStateList();
 
+            // 加载自定义行为（排除系统行为，系统行为由 Zone 自动生成）
             if (st.CustomActions != null)
             {
                 foreach (ShapeAction action in st.CustomActions)
                 {
-                    ShapeAction copy = new ShapeAction();
-                    copy.Name = action.Name;
-                    copy.ActionType = action.ActionType;
-                    copy.TargetState = action.TargetState;
-                    copy.CallbackName = action.CallbackName;
-                    copy.IconName = action.IconName;
+                    if (action.IsSystemBehavior)
+                        continue; // 系统行为在保存时自动生成，不加载到编辑列表
+                    ShapeAction copy = action.Clone();
                     _actions.Add(copy);
                 }
                 RefreshActionList();
@@ -614,7 +720,7 @@ namespace DiagramDesigner.Controls
                 rcCopy.UseShapeColors = rc.UseShapeColors;
                 rcCopy.Fill = rc.Fill;
                 rcCopy.Stroke = rc.Stroke;
-                // 多路径与布尔运算（CompoundPolygon）
+                // 多路径与布尔运算
                 rcCopy.BoolOp = rc.BoolOp;
                 if (rc.MultiPaths != null)
                 {
@@ -629,6 +735,13 @@ namespace DiagramDesigner.Controls
                             rcCopy.MultiPaths.Add(pathCopy);
                         }
                     }
+                }
+                // PathDefs（逐路径布尔运算）
+                if (rc.PathDefs != null)
+                {
+                    rcCopy.PathDefs = new List<PathDef>();
+                    foreach (PathDef pd in rc.PathDefs)
+                        rcCopy.PathDefs.Add(pd.Clone());
                 }
                 result.Add(rcCopy);
             }
@@ -657,7 +770,6 @@ namespace DiagramDesigner.Controls
 
         private void RefreshStateList()
         {
-            // 抑制 SelectedIndexChanged 事件，避免 Items.Clear / SetSelected 期间的事件级联
             _suppressStateChange = true;
             try
             {
@@ -677,10 +789,6 @@ namespace DiagramDesigner.Controls
             UpdateStateButtons();
         }
 
-        /// <summary>
-        /// 状态列表选择变化时，先将当前编辑保存回状态，再加载新选中状态的数据到编辑器。
-        /// 在 RefreshStateList 期间通过 _suppressStateChange 标志抑制此处理器，避免事件级联。
-        /// </summary>
         private void OnStateListSelectedIndexChanged(object sender, EventArgs e)
         {
             if (_suppressStateChange)
@@ -689,7 +797,6 @@ namespace DiagramDesigner.Controls
             int oldIdx = _editingStateIndex;
             int newIdx = _listStates.SelectedIndex;
 
-            // 仅当索引实际变化时才保存旧状态，避免无谓覆写
             if (oldIdx != newIdx && oldIdx >= 0 && oldIdx < _states.Count)
                 SaveCurrentEditorToState();
 
@@ -698,7 +805,6 @@ namespace DiagramDesigner.Controls
             UpdateStateButtons();
         }
 
-        /// <summary>将编辑器中的数据保存到当前正在编辑的状态</summary>
         private void SaveCurrentEditorToState()
         {
             if (_editingStateIndex < 0 || _editingStateIndex >= _states.Count)
@@ -706,7 +812,6 @@ namespace DiagramDesigner.Controls
 
             ShapeState s = _states[_editingStateIndex];
 
-            // 初始状态名不可更改
             if (s.Name != DefaultStateName)
                 s.Name = string.IsNullOrEmpty(_txtStateName.Text.Trim()) ? "State" : _txtStateName.Text.Trim();
 
@@ -736,11 +841,9 @@ namespace DiagramDesigner.Controls
                 s.CustomRenderCommands = new List<RenderCommand>();
             }
 
-            // 保存当前 Zone 列表到状态
             s.CustomZones = CloneShapeZones(_zones);
         }
 
-        /// <summary>将指定状态的数据加载到编辑器控件</summary>
         private void LoadStateToEditor(int idx)
         {
             if (idx < 0 || idx >= _states.Count)
@@ -751,11 +854,13 @@ namespace DiagramDesigner.Controls
                 _chkCustomGeom.Checked = false;
                 _paths.Clear();
                 _paths.Add(new List<PointF>());
+                _pathBoolOps.Clear();
+                _pathBoolOps.Add(BooleanOperation.None);
                 _currentPathIndex = 0;
                 _selectedVertex = -1;
                 _dragIndex = -1;
+                _selectedZoneIndex = -1;
                 _zones.Clear();
-                RefreshZoneList();
                 RefreshPathCombo();
                 UpdateGeometryVisibility();
                 return;
@@ -780,13 +885,14 @@ namespace DiagramDesigner.Controls
             {
                 _paths.Clear();
                 _paths.Add(new List<PointF>());
+                _pathBoolOps.Clear();
+                _pathBoolOps.Add(BooleanOperation.None);
                 _currentPathIndex = 0;
                 _selectedVertex = -1;
                 _dragIndex = -1;
                 RefreshPathCombo();
             }
 
-            // 从图形命令中同步填充/颜色（兼容 Polygon 与 CompoundPolygon）
             if (hasCustom)
             {
                 RenderCommand geomCmd = null;
@@ -802,15 +908,14 @@ namespace DiagramDesigner.Controls
                     _geomBorderColor = geomCmd.StrokeColor;
                     _filled = geomCmd.Fill;
                     _chkFilled.Checked = _filled;
-                    // 同步状态颜色，使工具栏色块与实际绘制颜色一致
                     _stateFillColor = _geomFillColor;
                     _stateBorderColor = _geomBorderColor;
                 }
             }
 
-            // 加载该状态的 Zone 列表
             _zones = CloneShapeZones(s.CustomZones);
-            RefreshZoneList();
+            _selectedZoneIndex = -1;
+            RefreshPathCombo();
 
             UpdateColorButtons();
             UpdateGeometryVisibility();
@@ -856,7 +961,6 @@ namespace DiagramDesigner.Controls
 
         private void OnAddState(object sender, EventArgs e)
         {
-            // 先保存当前编辑
             SaveCurrentEditorToState();
 
             ShapeState newState = new ShapeState();
@@ -866,7 +970,6 @@ namespace DiagramDesigner.Controls
             _states.Add(newState);
             RefreshStateList();
 
-            // 选中新状态并加载到编辑器（抑制事件，避免处理器用旧索引保存到错误状态）
             int newIdx = _states.Count - 1;
             _suppressStateChange = true;
             _listStates.SelectedIndex = newIdx;
@@ -927,7 +1030,6 @@ namespace DiagramDesigner.Controls
 
             RefreshStateList();
 
-            // 状态已重排序，必须抑制事件，否则处理器会用旧 _editingStateIndex 保存到错误状态
             _suppressStateChange = true;
             _listStates.SelectedIndex = 0;
             _suppressStateChange = false;
@@ -982,10 +1084,9 @@ namespace DiagramDesigner.Controls
             if (_editingStateIndex < 0 || _editingStateIndex >= _states.Count)
                 return;
             if (_states[_editingStateIndex].Name == DefaultStateName)
-                return; // 初始状态名不可改
+                return;
             _states[_editingStateIndex].Name = string.IsNullOrEmpty(_txtStateName.Text.Trim())
                 ? "State" : _txtStateName.Text.Trim();
-            // 刷新列表显示
             _listStates.Items[_editingStateIndex] = _states[_editingStateIndex].Name;
         }
 
@@ -1019,26 +1120,33 @@ namespace DiagramDesigner.Controls
             _chkFilled.Visible = visible;
             _panelPathToolbar.Visible = visible;
             _lblDefaultHint.Visible = !visible;
-            // Zone 区域属于状态属性，始终可见
         }
 
         #endregion
 
         #region 编辑器 — 图形加载与构建
 
-        /// <summary>获取当前正在编辑的路径（确保至少存在一条路径）</summary>
         private List<PointF> CurrentPath()
         {
             if (_paths.Count == 0)
+            {
                 _paths.Add(new List<PointF>());
+                _pathBoolOps.Add(BooleanOperation.None);
+            }
             if (_currentPathIndex < 0 || _currentPathIndex >= _paths.Count)
                 _currentPathIndex = 0;
             return _paths[_currentPathIndex];
         }
 
+        /// <summary>
+        /// 从 RenderCommand 列表加载顶点到编辑器。
+        /// 优先使用 PathDefs（逐路径布尔运算），回退到 MultiPaths（全局布尔运算），
+        /// 再回退到普通 Polygon。
+        /// </summary>
         private void LoadVerticesFromCommands(List<RenderCommand> cmds)
         {
             _paths.Clear();
+            _pathBoolOps.Clear();
             _currentPathIndex = 0;
             _closedPath = false;
             _selectedVertex = -1;
@@ -1047,6 +1155,7 @@ namespace DiagramDesigner.Controls
             if (cmds == null || cmds.Count == 0)
             {
                 _paths.Add(new List<PointF>());
+                _pathBoolOps.Add(BooleanOperation.None);
                 RefreshPathCombo();
                 return;
             }
@@ -1056,7 +1165,7 @@ namespace DiagramDesigner.Controls
             float offsetX = 20f;
             float offsetY = 20f;
 
-            // 优先查找 CompoundPolygon（多路径 + 布尔运算）
+            // 优先查找 CompoundPolygon
             RenderCommand compoundCmd = null;
             foreach (RenderCommand cmd in cmds)
             {
@@ -1064,18 +1173,19 @@ namespace DiagramDesigner.Controls
                 { compoundCmd = cmd; break; }
             }
 
-            if (compoundCmd != null && compoundCmd.MultiPaths != null && compoundCmd.MultiPaths.Count > 0)
+            // 1. 优先从 PathDefs 加载（逐路径布尔运算）
+            if (compoundCmd != null && compoundCmd.PathDefs != null && compoundCmd.PathDefs.Count > 0)
             {
-                _boolOp = compoundCmd.BoolOp;
-                foreach (PointF[] pts in compoundCmd.MultiPaths)
+                foreach (PathDef pd in compoundCmd.PathDefs)
                 {
                     List<PointF> path = new List<PointF>();
-                    if (pts != null)
+                    if (pd.Points != null)
                     {
-                        foreach (PointF pt in pts)
+                        foreach (PointF pt in pd.Points)
                             path.Add(new PointF(offsetX + pt.X * canvasW, offsetY + pt.Y * canvasH));
                     }
                     _paths.Add(path);
+                    _pathBoolOps.Add(pd.BoolOp);
                 }
                 if (_paths.Count > 0)
                     _closedPath = true;
@@ -1086,7 +1196,30 @@ namespace DiagramDesigner.Controls
                 return;
             }
 
-            // 回退：普通 Polygon（向后兼容，仅一条路径）
+            // 2. 回退到 MultiPaths（全局布尔运算，向后兼容）
+            if (compoundCmd != null && compoundCmd.MultiPaths != null && compoundCmd.MultiPaths.Count > 0)
+            {
+                foreach (PointF[] pts in compoundCmd.MultiPaths)
+                {
+                    List<PointF> path = new List<PointF>();
+                    if (pts != null)
+                    {
+                        foreach (PointF pt in pts)
+                            path.Add(new PointF(offsetX + pt.X * canvasW, offsetY + pt.Y * canvasH));
+                    }
+                    _paths.Add(path);
+                    _pathBoolOps.Add(compoundCmd.BoolOp);
+                }
+                if (_paths.Count > 0)
+                    _closedPath = true;
+                _geomFillColor = compoundCmd.FillColor;
+                _geomBorderColor = compoundCmd.StrokeColor;
+                _filled = compoundCmd.Fill;
+                RefreshPathCombo();
+                return;
+            }
+
+            // 3. 回退到普通 Polygon
             RenderCommand polyCmd = null;
             foreach (RenderCommand cmd in cmds)
             {
@@ -1100,8 +1233,8 @@ namespace DiagramDesigner.Controls
                 foreach (PointF pt in polyCmd.PolygonPoints)
                     path.Add(new PointF(offsetX + pt.X * canvasW, offsetY + pt.Y * canvasH));
                 _paths.Add(path);
+                _pathBoolOps.Add(BooleanOperation.None);
                 _closedPath = true;
-                _boolOp = BooleanOperation.None;
                 _geomFillColor = polyCmd.FillColor;
                 _geomBorderColor = polyCmd.StrokeColor;
                 _filled = polyCmd.Fill;
@@ -1109,23 +1242,31 @@ namespace DiagramDesigner.Controls
             else
             {
                 _paths.Add(new List<PointF>());
+                _pathBoolOps.Add(BooleanOperation.None);
             }
             RefreshPathCombo();
         }
 
+        /// <summary>
+        /// 从编辑器顶点构建 RenderCommand 列表。
+        /// 多路径时使用 PathDefs（逐路径布尔运算），单路径使用普通 Polygon。
+        /// </summary>
         private List<RenderCommand> BuildRenderCommandsFromVertices()
         {
-            // 收集所有有效路径（>=3 个顶点）
             List<List<PointF>> validPaths = new List<List<PointF>>();
-            foreach (List<PointF> path in _paths)
+            List<BooleanOperation> validOps = new List<BooleanOperation>();
+            for (int i = 0; i < _paths.Count; i++)
             {
-                if (path != null && path.Count >= 3)
-                    validPaths.Add(path);
+                if (_paths[i] != null && _paths[i].Count >= 3)
+                {
+                    validPaths.Add(_paths[i]);
+                    validOps.Add(i < _pathBoolOps.Count ? _pathBoolOps[i] : BooleanOperation.None);
+                }
             }
             if (validPaths.Count == 0)
                 return null;
 
-            // 计算所有路径的全局包围盒，统一归一化
+            // 全局包围盒归一化
             float minX = float.MaxValue, minY = float.MaxValue;
             float maxX = float.MinValue, maxY = float.MinValue;
             foreach (List<PointF> path in validPaths)
@@ -1143,7 +1284,7 @@ namespace DiagramDesigner.Controls
             if (rangeX < 1) rangeX = 1;
             if (rangeY < 1) rangeY = 1;
 
-            // 单路径：普通 Polygon（向后兼容）
+            // 单路径：普通 Polygon
             if (validPaths.Count == 1)
             {
                 List<PointF> path = validPaths[0];
@@ -1163,18 +1304,21 @@ namespace DiagramDesigner.Controls
                 return new List<RenderCommand> { polyCmd };
             }
 
-            // 多路径：CompoundPolygon
+            // 多路径：CompoundPolygon + PathDefs
             RenderCommand cmd = new RenderCommand();
             cmd.CommandType = RenderCommandType.CompoundPolygon;
-            cmd.MultiPaths = new List<PointF[]>();
-            foreach (List<PointF> path in validPaths)
+            cmd.PathDefs = new List<PathDef>();
+            cmd.MultiPaths = new List<PointF[]>(); // 同时保存 MultiPaths 以兼容旧版
+            for (int i = 0; i < validPaths.Count; i++)
             {
+                List<PointF> path = validPaths[i];
                 PointF[] normalized = new PointF[path.Count];
-                for (int i = 0; i < path.Count; i++)
-                    normalized[i] = new PointF((path[i].X - minX) / rangeX, (path[i].Y - minY) / rangeY);
+                for (int j = 0; j < path.Count; j++)
+                    normalized[j] = new PointF((path[j].X - minX) / rangeX, (path[j].Y - minY) / rangeY);
                 cmd.MultiPaths.Add(normalized);
+                cmd.PathDefs.Add(new PathDef(normalized, validOps[i]));
             }
-            cmd.BoolOp = _boolOp;
+            cmd.BoolOp = validOps.Count > 0 ? validOps[0] : BooleanOperation.None;
             cmd.X = 0; cmd.Y = 0;
             cmd.Width = 1; cmd.Height = 1;
             cmd.FillColor = _filled ? _geomFillColor : Color.Transparent;
@@ -1200,6 +1344,8 @@ namespace DiagramDesigner.Controls
         {
             _paths.Clear();
             _paths.Add(new List<PointF>());
+            _pathBoolOps.Clear();
+            _pathBoolOps.Add(BooleanOperation.None);
             _currentPathIndex = 0;
             _selectedVertex = -1;
             _dragIndex = -1;
@@ -1212,57 +1358,110 @@ namespace DiagramDesigner.Controls
 
         #region 编辑器 — 画布事件
 
+        /// <summary>
+        /// 画布绘制：渲染所有路径（当前高亮）、Zone（虚线边框+异色填充），
+        /// 选中的 Zone 显示调整手柄。
+        /// </summary>
         private void OnCanvasPaint(object sender, PaintEventArgs e)
         {
             Graphics g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.Clear(Color.White);
 
-            if (_paths.Count == 0)
-                return;
+            float canvasW = (float)_canvasPanel.Width;
+            float canvasH = (float)_canvasPanel.Height;
 
-            // 绘制每条路径，当前路径高亮
-            for (int p = 0; p < _paths.Count; p++)
+            // 1. 绘制路径
+            if (_paths.Count > 0)
             {
-                List<PointF> verts = _paths[p];
-                if (verts == null || verts.Count == 0)
-                    continue;
-
-                bool isCurrent = (p == _currentPathIndex);
-
-                // 填充
-                if (_filled && verts.Count >= 3)
+                for (int p = 0; p < _paths.Count; p++)
                 {
-                    GraphicsPath gp = new GraphicsPath();
-                    for (int i = 0; i < verts.Count; i++)
-                        gp.AddLine(verts[i], verts[(i + 1) % verts.Count]);
-                    if (_closedPath) gp.CloseFigure();
-                    int alpha = isCurrent ? 180 : 70;
-                    using (Brush brush = new SolidBrush(Color.FromArgb(alpha, _geomFillColor)))
-                        g.FillPath(brush, gp);
-                    gp.Dispose();
-                }
+                    List<PointF> verts = _paths[p];
+                    if (verts == null || verts.Count == 0)
+                        continue;
 
-                // 描边（非当前路径使用半透明描边以区分）
-                Color borderColor = isCurrent ? _geomBorderColor : Color.FromArgb(160, _geomBorderColor);
-                float penWidth = isCurrent ? 2f : 1f;
-                using (Pen pen = new Pen(borderColor, penWidth))
-                {
-                    for (int i = 0; i < verts.Count - 1; i++)
-                        g.DrawLine(pen, verts[i], verts[i + 1]);
-                    if (_closedPath && verts.Count >= 3)
-                        g.DrawLine(pen, verts[verts.Count - 1], verts[0]);
-                }
+                    bool isCurrent = (p == _currentPathIndex && _selectedZoneIndex < 0);
 
-                // 仅在当前路径绘制顶点手柄，避免视觉混乱
-                if (isCurrent)
-                {
-                    for (int i = 0; i < verts.Count; i++)
+                    if (_filled && verts.Count >= 3)
                     {
-                        RectangleF handle = new RectangleF(verts[i].X - 5, verts[i].Y - 5, 10, 10);
-                        bool isSelected = (i == _selectedVertex);
-                        using (Brush brush = new SolidBrush(isSelected ? Color.FromArgb(0, 120, 215) : Color.White))
-                        using (Pen pen = new Pen(_geomBorderColor, isSelected ? 2f : 1f))
+                        GraphicsPath gp = new GraphicsPath();
+                        for (int i = 0; i < verts.Count; i++)
+                            gp.AddLine(verts[i], verts[(i + 1) % verts.Count]);
+                        if (_closedPath) gp.CloseFigure();
+                        int alpha = isCurrent ? 180 : 70;
+                        using (Brush brush = new SolidBrush(Color.FromArgb(alpha, _geomFillColor)))
+                            g.FillPath(brush, gp);
+                        gp.Dispose();
+                    }
+
+                    Color borderColor = isCurrent ? _geomBorderColor : Color.FromArgb(160, _geomBorderColor);
+                    float penWidth = isCurrent ? 2f : 1f;
+                    using (Pen pen = new Pen(borderColor, penWidth))
+                    {
+                        for (int i = 0; i < verts.Count - 1; i++)
+                            g.DrawLine(pen, verts[i], verts[i + 1]);
+                        if (_closedPath && verts.Count >= 3)
+                            g.DrawLine(pen, verts[verts.Count - 1], verts[0]);
+                    }
+
+                    if (isCurrent)
+                    {
+                        for (int i = 0; i < verts.Count; i++)
+                        {
+                            RectangleF handle = new RectangleF(verts[i].X - 5, verts[i].Y - 5, 10, 10);
+                            bool isSelected = (i == _selectedVertex);
+                            using (Brush brush = new SolidBrush(isSelected ? Color.FromArgb(0, 120, 215) : Color.White))
+                            using (Pen pen = new Pen(_geomBorderColor, isSelected ? 2f : 1f))
+                            {
+                                g.FillRectangle(brush, handle);
+                                g.DrawRectangle(pen, handle.X, handle.Y, handle.Width, handle.Height);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. 绘制 Zone（虚线边框 + 半透明异色填充）
+            for (int zi = 0; zi < _zones.Count; zi++)
+            {
+                ShapeZone zone = _zones[zi];
+                RectangleF zr = GetZoneRectOnCanvas(zone, canvasW, canvasH);
+
+                // 半透明填充
+                Color fillC = Color.FromArgb(50, zone.FillColor.ToColor());
+                using (Brush brush = new SolidBrush(fillC))
+                    g.FillRectangle(brush, zr);
+
+                // 虚线边框
+                Color borderC = zone.BorderColor.ToColor();
+                bool isSelected = (zi == _selectedZoneIndex);
+                using (Pen pen = new Pen(borderC, isSelected ? 2f : 1f))
+                {
+                    pen.DashStyle = DashStyle.Dash;
+                    g.DrawRectangle(pen, zr.X, zr.Y, zr.Width, zr.Height);
+                }
+
+                // Zone 标签
+                string label = zone.Name;
+                if (zone.IsTitleZone) label += " [标题]";
+                else if (zone.IsMemberZone) label += " [成员]";
+                else if (zone.IsClickZone) label += " [点击]";
+                else if (zone.IsConnectionZone) label += " [连接]";
+                using (Font font = new Font("Microsoft YaHei", 7.5f))
+                using (Brush brush = new SolidBrush(borderC))
+                {
+                    g.DrawString(label, font, brush, zr.X + 2, zr.Y + 2);
+                }
+
+                // 选中 Zone：绘制四角调整手柄
+                if (isSelected)
+                {
+                    PointF[] corners = GetZoneCorners(zr);
+                    foreach (PointF corner in corners)
+                    {
+                        RectangleF handle = new RectangleF(corner.X - 4, corner.Y - 4, 8, 8);
+                        using (Brush brush = new SolidBrush(Color.FromArgb(0, 120, 215)))
+                        using (Pen pen = new Pen(Color.White, 1f))
                         {
                             g.FillRectangle(brush, handle);
                             g.DrawRectangle(pen, handle.X, handle.Y, handle.Width, handle.Height);
@@ -1271,19 +1470,118 @@ namespace DiagramDesigner.Controls
                 }
             }
 
-            // 顶部信息标注
+            // 3. 顶部信息标注
             using (Font font = new Font("Segoe UI", 8f))
             using (Brush brush = new SolidBrush(Color.FromArgb(80, 80, 80)))
             {
-                g.DrawString(string.Format("路径 {0}/{1}   布尔: {2}", _currentPathIndex + 1, _paths.Count, _boolOp),
-                    font, brush, 6, 4);
+                string info;
+                if (_selectedZoneIndex >= 0 && _selectedZoneIndex < _zones.Count)
+                {
+                    ShapeZone z = _zones[_selectedZoneIndex];
+                    info = string.Format("区域: {0}  锚定: {1}  (拖拽边角调整宽高)", z.Name, z.Anchor);
+                }
+                else
+                {
+                    BooleanOperation currentOp = (_currentPathIndex < _pathBoolOps.Count)
+                        ? _pathBoolOps[_currentPathIndex] : BooleanOperation.None;
+                    info = string.Format("路径 {0}/{1}   布尔: {2}", _currentPathIndex + 1, _paths.Count, currentOp);
+                }
+                g.DrawString(info, font, brush, 6, 4);
             }
+        }
+
+        /// <summary>计算 Zone 在画布上的像素矩形</summary>
+        private RectangleF GetZoneRectOnCanvas(ShapeZone zone, float canvasW, float canvasH)
+        {
+            // 画布内有 20px 边距，模拟图形边界
+            RectangleF shapeBounds = new RectangleF(20, 20, canvasW - 40, canvasH - 40);
+            // 预览中使用画布尺寸作为参考尺寸
+            return zone.GetAnchoredBounds(shapeBounds, canvasW - 40, canvasH - 40);
+        }
+
+        /// <summary>获取 Zone 矩形的四角坐标</summary>
+        private PointF[] GetZoneCorners(RectangleF rect)
+        {
+            return new PointF[]
+            {
+                new PointF(rect.X, rect.Y),               // 左上
+                new PointF(rect.Right, rect.Y),            // 右上
+                new PointF(rect.X, rect.Bottom),           // 左下
+                new PointF(rect.Right, rect.Bottom)        // 右下
+            };
+        }
+
+        /// <summary>命中测试 Zone 手柄，返回手柄索引 (0~3) 或 -1</summary>
+        private int HitTestZoneHandle(Point pt, RectangleF zoneRect)
+        {
+            PointF[] corners = GetZoneCorners(zoneRect);
+            for (int i = 0; i < corners.Length; i++)
+            {
+                float dx = corners[i].X - pt.X;
+                float dy = corners[i].Y - pt.Y;
+                if (dx * dx + dy * dy <= 64)
+                    return i;
+            }
+            return -1;
+        }
+
+        /// <summary>命中测试 Zone，返回 Zone 索引或 -1</summary>
+        private int HitTestZone(Point pt)
+        {
+            float canvasW = (float)_canvasPanel.Width;
+            float canvasH = (float)_canvasPanel.Height;
+            for (int i = _zones.Count - 1; i >= 0; i--)
+            {
+                RectangleF zr = GetZoneRectOnCanvas(_zones[i], canvasW, canvasH);
+                if (zr.Contains(pt))
+                    return i;
+            }
+            return -1;
         }
 
         private void OnCanvasMouseDown(object sender, MouseEventArgs e)
         {
             if (e.Button == MouseButtons.Left)
             {
+                float canvasW = (float)_canvasPanel.Width;
+                float canvasH = (float)_canvasPanel.Height;
+
+                // 优先检查 Zone 手柄（选中的 Zone）
+                if (_selectedZoneIndex >= 0 && _selectedZoneIndex < _zones.Count)
+                {
+                    RectangleF zr = GetZoneRectOnCanvas(_zones[_selectedZoneIndex], canvasW, canvasH);
+                    int handle = HitTestZoneHandle(e.Location, zr);
+                    if (handle >= 0)
+                    {
+                        _zoneDragMode = 2;
+                        _zoneDragHandle = handle;
+                        _zoneDragStart = e.Location;
+                        _canvasPanel.Cursor = Cursors.SizeNWSE;
+                        return;
+                    }
+                }
+
+                // 检查 Zone 内部点击
+                int zoneHit = HitTestZone(e.Location);
+                if (zoneHit >= 0)
+                {
+                    _selectedZoneIndex = zoneHit;
+                    _zoneDragMode = 1;
+                    _zoneDragStart = e.Location;
+                    RefreshPathCombo();
+                    _canvasPanel.Invalidate();
+                    return;
+                }
+
+                // 取消 Zone 选中，进入路径编辑模式
+                if (_selectedZoneIndex >= 0)
+                {
+                    _selectedZoneIndex = -1;
+                    RefreshPathCombo();
+                    _canvasPanel.Invalidate();
+                }
+
+                // 路径顶点操作
                 List<PointF> verts = CurrentPath();
                 int hitIdx = HitTestVertex(e.Location);
                 if (hitIdx >= 0)
@@ -1304,6 +1602,71 @@ namespace DiagramDesigner.Controls
 
         private void OnCanvasMouseMove(object sender, MouseEventArgs e)
         {
+            float canvasW = (float)_canvasPanel.Width;
+            float canvasH = (float)_canvasPanel.Height;
+
+            // Zone 拖拽调整大小
+            if (_zoneDragMode == 2 && _selectedZoneIndex >= 0 && _selectedZoneIndex < _zones.Count)
+            {
+                ShapeZone zone = _zones[_selectedZoneIndex];
+                float dx = e.X - _zoneDragStart.X;
+                float dy = e.Y - _zoneDragStart.Y;
+                float shapeW = canvasW - 40;
+                float shapeH = canvasH - 40;
+
+                // 根据手柄索引调整宽高
+                switch (_zoneDragHandle)
+                {
+                    case 0: // 左上
+                        zone.Width -= dx / shapeW;
+                        zone.X += dx / shapeW;
+                        zone.Height -= dy / shapeH;
+                        zone.Y += dy / shapeH;
+                        break;
+                    case 1: // 右上
+                        zone.Width += dx / shapeW;
+                        zone.Height -= dy / shapeH;
+                        zone.Y += dy / shapeH;
+                        break;
+                    case 2: // 左下
+                        zone.Width -= dx / shapeW;
+                        zone.X += dx / shapeW;
+                        zone.Height += dy / shapeH;
+                        break;
+                    case 3: // 右下
+                        zone.Width += dx / shapeW;
+                        zone.Height += dy / shapeH;
+                        break;
+                }
+                // 约束范围
+                if (zone.Width < 0.05f) zone.Width = 0.05f;
+                if (zone.Height < 0.05f) zone.Height = 0.05f;
+                if (zone.Width > 1f) zone.Width = 1f;
+                if (zone.Height > 1f) zone.Height = 1f;
+                if (zone.X < 0f) zone.X = 0f;
+                if (zone.Y < 0f) zone.Y = 0f;
+
+                _zoneDragStart = e.Location;
+                _canvasPanel.Invalidate();
+                return;
+            }
+
+            // Zone 移动
+            if (_zoneDragMode == 1 && _selectedZoneIndex >= 0 && _selectedZoneIndex < _zones.Count)
+            {
+                ShapeZone zone = _zones[_selectedZoneIndex];
+                float dx = e.X - _zoneDragStart.X;
+                float dy = e.Y - _zoneDragStart.Y;
+                float shapeW = canvasW - 40;
+                float shapeH = canvasH - 40;
+                zone.X += dx / shapeW;
+                zone.Y += dy / shapeH;
+                _zoneDragStart = e.Location;
+                _canvasPanel.Invalidate();
+                return;
+            }
+
+            // 路径顶点拖拽
             if (_dragIndex >= 0)
             {
                 List<PointF> verts = CurrentPath();
@@ -1313,6 +1676,23 @@ namespace DiagramDesigner.Controls
             }
             else
             {
+                // 更新鼠标样式
+                if (_selectedZoneIndex >= 0 && _selectedZoneIndex < _zones.Count)
+                {
+                    RectangleF zr = GetZoneRectOnCanvas(_zones[_selectedZoneIndex], canvasW, canvasH);
+                    int handle = HitTestZoneHandle(e.Location, zr);
+                    if (handle >= 0)
+                    {
+                        _canvasPanel.Cursor = (handle == 0 || handle == 3) ? Cursors.SizeNWSE : Cursors.SizeNESW;
+                        return;
+                    }
+                }
+                int zoneHit = HitTestZone(e.Location);
+                if (zoneHit >= 0)
+                {
+                    _canvasPanel.Cursor = Cursors.SizeAll;
+                    return;
+                }
                 int hitIdx = HitTestVertex(e.Location);
                 _canvasPanel.Cursor = hitIdx >= 0 ? Cursors.SizeAll : Cursors.Cross;
             }
@@ -1320,6 +1700,12 @@ namespace DiagramDesigner.Controls
 
         private void OnCanvasMouseUp(object sender, MouseEventArgs e)
         {
+            if (_zoneDragMode != 0)
+            {
+                _zoneDragMode = 0;
+                _zoneDragHandle = -1;
+                _canvasPanel.Cursor = Cursors.Default;
+            }
             if (_dragIndex >= 0)
             {
                 _dragIndex = -1;
@@ -1330,6 +1716,18 @@ namespace DiagramDesigner.Controls
         private void OnCanvasDoubleClick(object sender, EventArgs e)
         {
             MouseEventArgs me = (MouseEventArgs)e;
+
+            // 双击 Zone 打开编辑
+            int zoneHit = HitTestZone(me.Location);
+            if (zoneHit >= 0)
+            {
+                _selectedZoneIndex = zoneHit;
+                RefreshPathCombo();
+                _canvasPanel.Invalidate();
+                OnEditZone(null, null);
+                return;
+            }
+
             int hitIdx = HitTestVertex(me.Location);
             if (hitIdx >= 0)
             {
@@ -1400,16 +1798,17 @@ namespace DiagramDesigner.Controls
         private void OnNewPath(object sender, EventArgs e)
         {
             _paths.Add(new List<PointF>());
+            _pathBoolOps.Add(BooleanOperation.None);
             _currentPathIndex = _paths.Count - 1;
             _selectedVertex = -1;
             _dragIndex = -1;
+            _selectedZoneIndex = -1;
             RefreshPathCombo();
             _canvasPanel.Invalidate();
         }
 
         private void OnDeletePath(object sender, EventArgs e)
         {
-            // 仅剩一条路径时清空其顶点而非移除整条路径
             if (_paths.Count <= 1)
             {
                 CurrentPath().Clear();
@@ -1420,10 +1819,48 @@ namespace DiagramDesigner.Controls
                 return;
             }
             _paths.RemoveAt(_currentPathIndex);
+            _pathBoolOps.RemoveAt(_currentPathIndex);
             if (_currentPathIndex >= _paths.Count)
                 _currentPathIndex = _paths.Count - 1;
             _selectedVertex = -1;
             _dragIndex = -1;
+            RefreshPathCombo();
+            _canvasPanel.Invalidate();
+        }
+
+        /// <summary>上移当前路径（调整层叠顺序）</summary>
+        private void OnMovePathUp(object sender, EventArgs e)
+        {
+            if (_currentPathIndex <= 0 || _currentPathIndex >= _paths.Count)
+                return;
+            // 交换路径和布尔运算
+            List<PointF> tmpPath = _paths[_currentPathIndex];
+            _paths[_currentPathIndex] = _paths[_currentPathIndex - 1];
+            _paths[_currentPathIndex - 1] = tmpPath;
+
+            BooleanOperation tmpOp = _pathBoolOps[_currentPathIndex];
+            _pathBoolOps[_currentPathIndex] = _pathBoolOps[_currentPathIndex - 1];
+            _pathBoolOps[_currentPathIndex - 1] = tmpOp;
+
+            _currentPathIndex--;
+            RefreshPathCombo();
+            _canvasPanel.Invalidate();
+        }
+
+        /// <summary>下移当前路径（调整层叠顺序）</summary>
+        private void OnMovePathDown(object sender, EventArgs e)
+        {
+            if (_currentPathIndex < 0 || _currentPathIndex >= _paths.Count - 1)
+                return;
+            List<PointF> tmpPath = _paths[_currentPathIndex];
+            _paths[_currentPathIndex] = _paths[_currentPathIndex + 1];
+            _paths[_currentPathIndex + 1] = tmpPath;
+
+            BooleanOperation tmpOp = _pathBoolOps[_currentPathIndex];
+            _pathBoolOps[_currentPathIndex] = _pathBoolOps[_currentPathIndex + 1];
+            _pathBoolOps[_currentPathIndex + 1] = tmpOp;
+
+            _currentPathIndex++;
             RefreshPathCombo();
             _canvasPanel.Invalidate();
         }
@@ -1433,45 +1870,78 @@ namespace DiagramDesigner.Controls
             if (_suppressPathChange)
                 return;
             int idx = _cmbPathSelect.SelectedIndex;
-            if (idx >= 0 && idx < _paths.Count)
+            if (idx < 0)
+                return;
+
+            int zoneCount = _zones.Count;
+            if (idx < zoneCount)
             {
-                _currentPathIndex = idx;
+                // 选中了 Zone
+                _selectedZoneIndex = idx;
                 _selectedVertex = -1;
-                _canvasPanel.Invalidate();
+                _dragIndex = -1;
             }
-        }
-
-        private void OnBoolOpChanged(object sender, EventArgs e)
-        {
-            if (_cmbBoolOp.SelectedIndex >= 0)
+            else
             {
-                _boolOp = (BooleanOperation)_cmbBoolOp.SelectedIndex;
-                _canvasPanel.Invalidate();
+                // 选中了路径
+                _selectedZoneIndex = -1;
+                _currentPathIndex = idx - zoneCount;
+                _selectedVertex = -1;
             }
+            UpdatePathToolbarMode();
+            _canvasPanel.Invalidate();
         }
 
-        /// <summary>刷新路径选择下拉框及布尔运算下拉框的显示</summary>
+        // OnBoolOpChanged 已移除：布尔运算改由 OnBoolOpMenuItem 处理
+
+        /// <summary>
+        /// 刷新路径/区域下拉框。
+        /// 区域始终显示在路径之上（列表顶部），格式：◈ Zone名 [类型]
+        /// 路径格式：▲ 路径 N (顶点数)
+        /// </summary>
         private void RefreshPathCombo()
         {
-            if (_cmbPathSelect == null || _cmbBoolOp == null)
+            if (_cmbPathSelect == null || _btnBoolOp == null)
                 return;
             _suppressPathChange = true;
             try
             {
                 _cmbPathSelect.Items.Clear();
+
+                // Zone 项（始终在顶部）
+                for (int i = 0; i < _zones.Count; i++)
+                {
+                    ShapeZone z = _zones[i];
+                    string flag = "";
+                    if (z.IsTitleZone) flag = " [标题]";
+                    else if (z.IsMemberZone) flag = " [成员]";
+                    else if (z.IsClickZone) flag = " [点击]";
+                    else if (z.IsConnectionZone) flag = " [连接]";
+                    _cmbPathSelect.Items.Add(string.Format("◈ {0}{1}", z.Name, flag));
+                }
+
+                // 路径项
                 for (int i = 0; i < _paths.Count; i++)
                 {
                     int vc = (_paths[i] != null) ? _paths[i].Count : 0;
-                    _cmbPathSelect.Items.Add(string.Format("路径 {0} ({1})", i + 1, vc));
+                    _cmbPathSelect.Items.Add(string.Format("▲ 路径 {0} ({1})", i + 1, vc));
                 }
-                if (_currentPathIndex < 0 || _currentPathIndex >= _paths.Count)
-                    _currentPathIndex = 0;
-                if (_paths.Count > 0)
-                    _cmbPathSelect.SelectedIndex = _currentPathIndex;
 
-                int targetBool = (int)_boolOp;
-                if (_cmbBoolOp.Items.Count > targetBool && _cmbBoolOp.SelectedIndex != targetBool)
-                    _cmbBoolOp.SelectedIndex = targetBool;
+                // 设置选中项
+                if (_selectedZoneIndex >= 0 && _selectedZoneIndex < _zones.Count)
+                {
+                    _cmbPathSelect.SelectedIndex = _selectedZoneIndex;
+                }
+                else
+                {
+                    if (_currentPathIndex < 0 || _currentPathIndex >= _paths.Count)
+                        _currentPathIndex = 0;
+                    int pathSelIdx = _zones.Count + _currentPathIndex;
+                    if (pathSelIdx < _cmbPathSelect.Items.Count)
+                        _cmbPathSelect.SelectedIndex = pathSelIdx;
+                }
+
+                UpdatePathToolbarMode();
             }
             finally
             {
@@ -1479,84 +1949,84 @@ namespace DiagramDesigner.Controls
             }
         }
 
+        /// <summary>根据当前选择（Zone 或路径）更新工具栏控件状态</summary>
+        private void UpdatePathToolbarMode()
+        {
+            bool isZone = (_selectedZoneIndex >= 0);
+            // 路径操作按钮
+            _btnMovePathUp.Enabled = !isZone && _currentPathIndex > 0;
+            _btnMovePathDown.Enabled = !isZone && _currentPathIndex < _paths.Count - 1;
+            _btnNewPath.Enabled = true;
+            _btnDeletePath.Enabled = !isZone;
+            // Zone 操作按钮
+            _btnAddZoneTB.Enabled = true;
+            _btnEditZoneTB.Enabled = isZone;
+            _btnDeleteZoneTB.Enabled = isZone;
+            // 布尔运算按钮（路径模式启用，区域模式禁用）
+            _btnBoolOp.Enabled = !isZone;
+            if (!isZone)
+                UpdateBoolOpButtonText();
+        }
+
         #endregion
 
         #region 编辑器 — Zone 管理
 
-        private void RefreshZoneList()
-        {
-            int prevSel = _listZones.SelectedIndex;
-            _listZones.Items.Clear();
-            for (int i = 0; i < _zones.Count; i++)
-            {
-                ShapeZone z = _zones[i];
-                string flags = "";
-                if (z.IsTitleZone) flags += " [标题]";
-                if (z.IsMemberZone) flags += " [成员]";
-                _listZones.Items.Add(string.Format("{0} ({1}){2}", z.Name, z.Layout, flags));
-            }
-            if (prevSel >= 0 && prevSel < _listZones.Items.Count)
-                _listZones.SelectedIndex = prevSel;
-            else if (_listZones.Items.Count > 0)
-                _listZones.SelectedIndex = 0;
-            UpdateZoneButtons();
-        }
-
-        private void UpdateZoneButtons()
-        {
-            bool hasSel = (_listZones.SelectedIndex >= 0 && _listZones.SelectedIndex < _zones.Count);
-            _btnEditZone.Enabled = hasSel;
-            _btnDeleteZone.Enabled = hasSel;
-        }
-
-        private void OnZoneListSelectedIndexChanged(object sender, EventArgs e)
-        {
-            UpdateZoneButtons();
-        }
-
         private void OnAddZone(object sender, EventArgs e)
         {
-            ShapeZone zone = new ShapeZone();
-            zone.Name = "Zone" + (_zones.Count + 1);
-            zone.X = 0.1f; zone.Y = 0.1f;
-            zone.Width = 0.8f; zone.Height = 0.8f;
-            using (ShapeZoneEditDialog dlg = new ShapeZoneEditDialog(zone))
+            using (ShapeZoneEditDialog dlg = new ShapeZoneEditDialog(null))
             {
-                if (dlg.ShowDialog(this) == DialogResult.OK && dlg.ResultZone != null)
+                if (dlg.ShowDialog(this) == DialogResult.OK)
                 {
-                    _zones.Add(dlg.ResultZone);
-                    RefreshZoneList();
-                    if (_listZones.Items.Count > 0)
-                        _listZones.SelectedIndex = _listZones.Items.Count - 1;
+                    if (dlg.DeleteRequested)
+                        return; // 添加模式下不处理删除
+                    if (dlg.ResultZone != null)
+                    {
+                        _zones.Add(dlg.ResultZone);
+                        _selectedZoneIndex = _zones.Count - 1;
+                        RefreshPathCombo();
+                        _canvasPanel.Invalidate();
+                    }
                 }
             }
         }
 
         private void OnEditZone(object sender, EventArgs e)
         {
-            int idx = _listZones.SelectedIndex;
+            int idx = _selectedZoneIndex;
             if (idx < 0 || idx >= _zones.Count)
                 return;
             using (ShapeZoneEditDialog dlg = new ShapeZoneEditDialog(_zones[idx]))
             {
-                if (dlg.ShowDialog(this) == DialogResult.OK && dlg.ResultZone != null)
+                if (dlg.ShowDialog(this) == DialogResult.OK)
                 {
-                    _zones[idx] = dlg.ResultZone;
-                    RefreshZoneList();
+                    if (dlg.DeleteRequested)
+                    {
+                        _zones.RemoveAt(idx);
+                        _selectedZoneIndex = -1;
+                    }
+                    else if (dlg.ResultZone != null)
+                    {
+                        _zones[idx] = dlg.ResultZone;
+                    }
+                    RefreshPathCombo();
+                    _canvasPanel.Invalidate();
                 }
             }
         }
 
         private void OnDeleteZone(object sender, EventArgs e)
         {
-            int idx = _listZones.SelectedIndex;
+            int idx = _selectedZoneIndex;
             if (idx < 0 || idx >= _zones.Count)
                 return;
             if (MessageBox.Show(string.Format("确定删除区域 \"{0}\"？", _zones[idx].Name),
                 "确认删除", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
             {
                 _zones.RemoveAt(idx);
-                RefreshZoneList();
+                _selectedZoneIndex = -1;
+                RefreshPathCombo();
+                _canvasPanel.Invalidate();
             }
         }
 
@@ -1645,7 +2115,13 @@ namespace DiagramDesigner.Controls
             _listActions.Items.Clear();
             foreach (ShapeAction action in _actions)
             {
-                string typeStr = (action.ActionType == ShapeActionType.StateChange) ? "[切换状态]" : "[宿主回调]";
+                string typeStr;
+                if (action.HasSubActions)
+                    typeStr = "[序列]";
+                else if (action.ActionType == ShapeActionType.StateChange)
+                    typeStr = "[切换状态]";
+                else
+                    typeStr = "[宿主回调]";
                 _listActions.Items.Add(string.Format("{0} {1}", typeStr, action.Name));
             }
             UpdateActionButtons();
@@ -1721,7 +2197,9 @@ namespace DiagramDesigner.Controls
             base.OnClosing(e);
             if (this.DialogResult == DialogResult.OK)
             {
-                // 保存当前编辑器状态
+                if (_infoTimer != null)
+                    _infoTimer.Stop();
+
                 SaveCurrentEditorToState();
 
                 List<RenderCommand> defaultCmds = GetDefaultRenderCommands();
@@ -1773,7 +2251,7 @@ namespace DiagramDesigner.Controls
             foreach (ShapeState s in _states)
                 st.DefaultStates.Add(CloneShapeState(s));
 
-            // 从默认状态复制 Zone 到 ShapeType（作为类型级 Zone 集合）
+            // 从默认状态复制 Zone 到 ShapeType
             ShapeState zoneSource = null;
             foreach (ShapeState s in _states)
             {
@@ -1788,17 +2266,15 @@ namespace DiagramDesigner.Controls
                     st.Zones.Add(z.Clone());
             }
 
+            // 复制用户自定义行为
             st.CustomActions = new List<ShapeAction>();
             foreach (ShapeAction a in _actions)
             {
-                ShapeAction copy = new ShapeAction();
-                copy.Name = a.Name;
-                copy.ActionType = a.ActionType;
-                copy.TargetState = a.TargetState;
-                copy.CallbackName = a.CallbackName;
-                copy.IconName = a.IconName;
-                st.CustomActions.Add(copy);
+                st.CustomActions.Add(a.Clone());
             }
+
+            // 根据 Zone 自动生成系统行为
+            st.GenerateSystemBehaviors();
 
             _resultShapeType = st;
         }
@@ -1807,25 +2283,47 @@ namespace DiagramDesigner.Controls
     }
 
     /// <summary>
-    /// 图形区域（Zone）编辑对话框。用于添加或编辑单个 ShapeZone。
-    /// 风格与 ShapeActionEditDialog 一致，作为 CustomShapeDialog 的子对话框使用。
+    /// 图形区域（Zone）编辑对话框。
+    /// 支持布局/缩放中文释义、ZoneAnchor 对齐选项、
+    /// 点击区域和连接区域配置。
+    /// 当 Anchor != Absolute 时，X/Y 为偏移值。
     /// </summary>
     public class ShapeZoneEditDialog : Form
     {
         private TextBox _txtName;
         private ComboBox _cmbLayout;
         private ComboBox _cmbScaling;
+        private ComboBox _cmbAnchor;
         private NumericUpDown _numX;
         private NumericUpDown _numY;
         private NumericUpDown _numW;
         private NumericUpDown _numH;
+        private Label _lblX;
+        private Label _lblY;
         private CheckBox _chkShowBorder;
         private CheckBox _chkTitleZone;
         private CheckBox _chkMemberZone;
+        private CheckBox _chkClickZone;
+        private CheckBox _chkConnectionZone;
+
+        // 连接区域属性
+        private CheckBox _chkCanStart;
+        private CheckBox _chkCanEnd;
+        private CheckBox _chkAllowSelfConnect;
+        private ComboBox _cmbLineTypes;
+
+        // 边框/填充颜色
+        private Button _btnBorderColor;
+        private Button _btnFillColor;
+
         private Button _btnOk;
         private Button _btnCancel;
+        private Button _btnDelete;
+
+        private ColorDialog _colorDialog = new ColorDialog();
 
         public ShapeZone ResultZone { get; private set; }
+        public bool DeleteRequested { get; private set; }
 
         public ShapeZoneEditDialog() : this(null) { }
 
@@ -1836,21 +2334,15 @@ namespace DiagramDesigner.Controls
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
             this.MaximizeBox = false;
             this.MinimizeBox = false;
-            this.ClientSize = new Size(360, 260);
+            this.ClientSize = new Size(400, 520);
 
             int y = 12;
             int lblW = 80;
             int xVal = 95;
-            int valW = 250;
+            int valW = 285;
 
             // 名称
-            Label lblName = new Label();
-            lblName.Text = "名称：";
-            lblName.Location = new Point(10, y);
-            lblName.Size = new Size(lblW, 20);
-            lblName.TextAlign = System.Drawing.ContentAlignment.MiddleRight;
-            this.Controls.Add(lblName);
-
+            AddLabel("名称：", y, lblW);
             _txtName = new TextBox();
             _txtName.Location = new Point(xVal, y);
             _txtName.Size = new Size(valW, 22);
@@ -1858,92 +2350,187 @@ namespace DiagramDesigner.Controls
             this.Controls.Add(_txtName);
             y += 32;
 
-            // 布局
-            Label lblLayout = new Label();
-            lblLayout.Text = "布局：";
-            lblLayout.Location = new Point(10, y);
-            lblLayout.Size = new Size(lblW, 20);
-            lblLayout.TextAlign = System.Drawing.ContentAlignment.MiddleRight;
-            this.Controls.Add(lblLayout);
-
+            // 布局（中文释义）
+            AddLabel("布局：", y, lblW);
             _cmbLayout = new ComboBox();
             _cmbLayout.DropDownStyle = ComboBoxStyle.DropDownList;
             _cmbLayout.Location = new Point(xVal, y);
             _cmbLayout.Size = new Size(valW, 22);
-            _cmbLayout.Items.Add("None");
-            _cmbLayout.Items.Add("Title");
-            _cmbLayout.Items.Add("Stack");
-            _cmbLayout.Items.Add("Flow");
-            _cmbLayout.Items.Add("Member");
+            _cmbLayout.Items.Add("无 — 仅命名区域，不排列子元件");
+            _cmbLayout.Items.Add("标题 — 显示图形名称");
+            _cmbLayout.Items.Add("堆叠 — 子元件从上到下排列");
+            _cmbLayout.Items.Add("流式 — 子元件从左到右排列");
+            _cmbLayout.Items.Add("成员 — 显示成员列表");
+            _cmbLayout.Items.Add("点击 — 点击后触发行为");
+            _cmbLayout.Items.Add("连接 — 作为连线起点/终点");
             _cmbLayout.SelectedIndex = (editZone != null) ? (int)editZone.Layout : 0;
+            _cmbLayout.SelectedIndexChanged += new EventHandler(OnLayoutChanged);
             this.Controls.Add(_cmbLayout);
             y += 32;
 
-            // 缩放
-            Label lblScaling = new Label();
-            lblScaling.Text = "缩放：";
-            lblScaling.Location = new Point(10, y);
-            lblScaling.Size = new Size(lblW, 20);
-            lblScaling.TextAlign = System.Drawing.ContentAlignment.MiddleRight;
-            this.Controls.Add(lblScaling);
-
+            // 缩放（中文释义）
+            AddLabel("缩放：", y, lblW);
             _cmbScaling = new ComboBox();
             _cmbScaling.DropDownStyle = ComboBoxStyle.DropDownList;
             _cmbScaling.Location = new Point(xVal, y);
             _cmbScaling.Size = new Size(valW, 22);
-            _cmbScaling.Items.Add("None");
-            _cmbScaling.Items.Add("Freeze");
+            _cmbScaling.Items.Add("随图形等比缩放");
+            _cmbScaling.Items.Add("冻结边角 — 缩放时保持绝对像素尺寸");
             _cmbScaling.SelectedIndex = (editZone != null) ? (int)editZone.Scaling : 0;
             this.Controls.Add(_cmbScaling);
-            y += 36;
-
-            // X / Y
-            Label lblXY = new Label();
-            lblXY.Text = "X / Y：";
-            lblXY.Location = new Point(10, y);
-            lblXY.Size = new Size(lblW, 20);
-            lblXY.TextAlign = System.Drawing.ContentAlignment.MiddleRight;
-            this.Controls.Add(lblXY);
-            _numX = MakeNum(xVal, y);
-            _numY = MakeNum(xVal + 130, y);
-            this.Controls.Add(_numX);
-            this.Controls.Add(_numY);
             y += 32;
 
+            // 锚定/对齐
+            AddLabel("对齐：", y, lblW);
+            _cmbAnchor = new ComboBox();
+            _cmbAnchor.DropDownStyle = ComboBoxStyle.DropDownList;
+            _cmbAnchor.Location = new Point(xVal, y);
+            _cmbAnchor.Size = new Size(valW, 22);
+            _cmbAnchor.Items.Add("绝对定位 — X/Y 为归一化坐标");
+            _cmbAnchor.Items.Add("左上角");
+            _cmbAnchor.Items.Add("上居中");
+            _cmbAnchor.Items.Add("右上角");
+            _cmbAnchor.Items.Add("左居中");
+            _cmbAnchor.Items.Add("正中（标题默认）");
+            _cmbAnchor.Items.Add("右居中");
+            _cmbAnchor.Items.Add("左下角");
+            _cmbAnchor.Items.Add("下居中");
+            _cmbAnchor.Items.Add("右下角");
+            _cmbAnchor.SelectedIndex = (editZone != null) ? (int)editZone.Anchor : 0;
+            _cmbAnchor.SelectedIndexChanged += new EventHandler(OnAnchorChanged);
+            this.Controls.Add(_cmbAnchor);
+            y += 32;
+
+            // X / Y
+            _lblX = AddLabel("X：", y, lblW);
+            _numX = MakeNum(xVal, y, 130);
+            _lblY = AddLabel("Y：", y, 230);
+            _numY = MakeNum(xVal + 140, y, 130);
+            this.Controls.Add(_numX);
+            this.Controls.Add(_numY);
+            y += 30;
+
             // 宽 / 高
-            Label lblWH = new Label();
-            lblWH.Text = "宽 / 高：";
-            lblWH.Location = new Point(10, y);
-            lblWH.Size = new Size(lblW, 20);
-            lblWH.TextAlign = System.Drawing.ContentAlignment.MiddleRight;
-            this.Controls.Add(lblWH);
-            _numW = MakeNum(xVal, y);
-            _numH = MakeNum(xVal + 130, y);
+            AddLabel("宽 / 高：", y, lblW);
+            _numW = MakeNum(xVal, y, 130);
+            _numH = MakeNum(xVal + 140, y, 130);
             this.Controls.Add(_numW);
             this.Controls.Add(_numH);
-            y += 36;
+            y += 32;
 
-            // 复选框
-            _chkShowBorder = new CheckBox();
-            _chkShowBorder.Text = "显示边框";
-            _chkShowBorder.Location = new Point(xVal, y);
-            _chkShowBorder.Size = new Size(85, 22);
-            _chkShowBorder.Checked = (editZone != null) ? editZone.ShowBorder : false;
-            this.Controls.Add(_chkShowBorder);
+            // 颜色
+            AddLabel("边框色：", y, lblW);
+            _btnBorderColor = new Button();
+            _btnBorderColor.Location = new Point(xVal, y);
+            _btnBorderColor.Size = new Size(60, 22);
+            _btnBorderColor.Text = "选取";
+            _btnBorderColor.Click += new EventHandler(OnPickBorderColor);
+            this.Controls.Add(_btnBorderColor);
 
+            AddLabel("填充色：", y, 165);
+            _btnFillColor = new Button();
+            _btnFillColor.Location = new Point(255, y);
+            _btnFillColor.Size = new Size(60, 22);
+            _btnFillColor.Text = "选取";
+            _btnFillColor.Click += new EventHandler(OnPickFillColor);
+            this.Controls.Add(_btnFillColor);
+            y += 32;
+
+            // 类型复选框
+            AddLabel("类型：", y, lblW);
             _chkTitleZone = new CheckBox();
             _chkTitleZone.Text = "标题区域";
-            _chkTitleZone.Location = new Point(xVal + 90, y);
+            _chkTitleZone.Location = new Point(xVal, y);
             _chkTitleZone.Size = new Size(85, 22);
             _chkTitleZone.Checked = (editZone != null) ? editZone.IsTitleZone : false;
+            _chkTitleZone.CheckedChanged += new EventHandler(OnZoneTypeChanged);
             this.Controls.Add(_chkTitleZone);
 
             _chkMemberZone = new CheckBox();
             _chkMemberZone.Text = "成员区域";
-            _chkMemberZone.Location = new Point(xVal + 180, y);
+            _chkMemberZone.Location = new Point(xVal + 90, y);
             _chkMemberZone.Size = new Size(85, 22);
             _chkMemberZone.Checked = (editZone != null) ? editZone.IsMemberZone : false;
+            _chkMemberZone.CheckedChanged += new EventHandler(OnZoneTypeChanged);
             this.Controls.Add(_chkMemberZone);
+
+            _chkClickZone = new CheckBox();
+            _chkClickZone.Text = "点击区域";
+            _chkClickZone.Location = new Point(xVal + 180, y);
+            _chkClickZone.Size = new Size(85, 22);
+            _chkClickZone.Checked = (editZone != null) ? editZone.IsClickZone : false;
+            _chkClickZone.CheckedChanged += new EventHandler(OnZoneTypeChanged);
+            this.Controls.Add(_chkClickZone);
+
+            _chkConnectionZone = new CheckBox();
+            _chkConnectionZone.Text = "连接区域";
+            _chkConnectionZone.Location = new Point(xVal, y + 24);
+            _chkConnectionZone.Size = new Size(85, 22);
+            _chkConnectionZone.Checked = (editZone != null) ? editZone.IsConnectionZone : false;
+            _chkConnectionZone.CheckedChanged += new EventHandler(OnZoneTypeChanged);
+            this.Controls.Add(_chkConnectionZone);
+
+            _chkShowBorder = new CheckBox();
+            _chkShowBorder.Text = "显示边框";
+            _chkShowBorder.Location = new Point(xVal + 90, y + 24);
+            _chkShowBorder.Size = new Size(85, 22);
+            _chkShowBorder.Checked = (editZone != null) ? editZone.ShowBorder : false;
+            this.Controls.Add(_chkShowBorder);
+            y += 54;
+
+            // 连接区域属性（仅当 IsConnectionZone 时显示）
+            AddLabel("连线设置：", y, lblW);
+
+            _chkCanStart = new CheckBox();
+            _chkCanStart.Text = "可作起点";
+            _chkCanStart.Location = new Point(xVal, y);
+            _chkCanStart.Size = new Size(80, 22);
+            _chkCanStart.Checked = (editZone != null) ? editZone.CanStart : true;
+            this.Controls.Add(_chkCanStart);
+
+            _chkCanEnd = new CheckBox();
+            _chkCanEnd.Text = "可作终点";
+            _chkCanEnd.Location = new Point(xVal + 85, y);
+            _chkCanEnd.Size = new Size(80, 22);
+            _chkCanEnd.Checked = (editZone != null) ? editZone.CanEnd : true;
+            this.Controls.Add(_chkCanEnd);
+
+            _chkAllowSelfConnect = new CheckBox();
+            _chkAllowSelfConnect.Text = "允许自连";
+            _chkAllowSelfConnect.Location = new Point(xVal + 170, y);
+            _chkAllowSelfConnect.Size = new Size(85, 22);
+            _chkAllowSelfConnect.Checked = (editZone != null) ? editZone.AllowSelfConnect : false;
+            this.Controls.Add(_chkAllowSelfConnect);
+            y += 30;
+
+            AddLabel("允许线型：", y, lblW);
+            _cmbLineTypes = new ComboBox();
+            _cmbLineTypes.DropDownStyle = ComboBoxStyle.DropDownList;
+            _cmbLineTypes.Location = new Point(xVal, y);
+            _cmbLineTypes.Size = new Size(valW, 22);
+            _cmbLineTypes.Items.Add("直线, 曲线, 正交线 (全部)");
+            _cmbLineTypes.Items.Add("仅直线");
+            _cmbLineTypes.Items.Add("仅曲线");
+            _cmbLineTypes.Items.Add("仅正交线");
+            _cmbLineTypes.Items.Add("直线, 曲线");
+            _cmbLineTypes.Items.Add("直线, 正交线");
+            _cmbLineTypes.Items.Add("曲线, 正交线");
+            if (editZone != null)
+            {
+                string lt = editZone.AllowedLineTypes;
+                if (lt == "Straight,Curve,Orthogonal") _cmbLineTypes.SelectedIndex = 0;
+                else if (lt == "Straight") _cmbLineTypes.SelectedIndex = 1;
+                else if (lt == "Curve") _cmbLineTypes.SelectedIndex = 2;
+                else if (lt == "Orthogonal") _cmbLineTypes.SelectedIndex = 3;
+                else if (lt == "Straight,Curve") _cmbLineTypes.SelectedIndex = 4;
+                else if (lt == "Straight,Orthogonal") _cmbLineTypes.SelectedIndex = 5;
+                else if (lt == "Curve,Orthogonal") _cmbLineTypes.SelectedIndex = 6;
+                else _cmbLineTypes.SelectedIndex = 0;
+            }
+            else
+                _cmbLineTypes.SelectedIndex = 0;
+            this.Controls.Add(_cmbLineTypes);
+            y += 36;
 
             // 预填数值
             if (editZone != null)
@@ -1952,46 +2539,171 @@ namespace DiagramDesigner.Controls
                 _numY.Value = ClampDecimal(editZone.Y);
                 _numW.Value = ClampDecimal(editZone.Width);
                 _numH.Value = ClampDecimal(editZone.Height);
+                _btnBorderColor.BackColor = editZone.BorderColor.ToColor();
+                _btnFillColor.BackColor = editZone.FillColor.ToColor();
             }
             else
             {
                 _numX.Value = 0m;
                 _numY.Value = 0m;
-                _numW.Value = 1m;
-                _numH.Value = 1m;
+                _numW.Value = 0.5m;
+                _numH.Value = 0.3m;
+                _btnBorderColor.BackColor = Color.FromArgb(180, 180, 180);
+                _btnFillColor.BackColor = Color.FromArgb(248, 220, 220);
             }
 
-            // 确定 / 取消
+            // 按钮
+            _btnDelete = new Button();
+            _btnDelete.Text = "删除区域";
+            _btnDelete.Location = new Point(10, 480);
+            _btnDelete.Size = new Size(80, 28);
+            _btnDelete.ForeColor = Color.Red;
+            _btnDelete.Visible = (editZone != null);
+            _btnDelete.Click += new EventHandler(OnDelete);
+            this.Controls.Add(_btnDelete);
+
             _btnOk = new Button();
             _btnOk.Text = "确定";
             _btnOk.DialogResult = DialogResult.OK;
-            _btnOk.Location = new Point(190, 222);
+            _btnOk.Location = new Point(230, 480);
             _btnOk.Size = new Size(75, 28);
             this.Controls.Add(_btnOk);
 
             _btnCancel = new Button();
             _btnCancel.Text = "取消";
             _btnCancel.DialogResult = DialogResult.Cancel;
-            _btnCancel.Location = new Point(280, 222);
+            _btnCancel.Location = new Point(315, 480);
             _btnCancel.Size = new Size(75, 28);
             this.Controls.Add(_btnCancel);
 
             this.AcceptButton = _btnOk;
             this.CancelButton = _btnCancel;
+
+            UpdateConnectionVisibility();
+            UpdateXYLabels();
+        }
+
+        private Label AddLabel(string text, int y, int lblW)
+        {
+            Label lbl = new Label();
+            lbl.Text = text;
+            lbl.Location = new Point(10, y);
+            lbl.Size = new Size(lblW, 20);
+            lbl.TextAlign = System.Drawing.ContentAlignment.MiddleRight;
+            this.Controls.Add(lbl);
+            return lbl;
+        }
+
+        /// <summary>布局变化时自动设置类型复选框</summary>
+        private void OnLayoutChanged(object sender, EventArgs e)
+        {
+            int layoutIdx = _cmbLayout.SelectedIndex;
+            // 自动勾选对应类型
+            _chkTitleZone.Checked = (layoutIdx == (int)ZoneLayout.Title);
+            _chkMemberZone.Checked = (layoutIdx == (int)ZoneLayout.Member);
+            _chkClickZone.Checked = (layoutIdx == (int)ZoneLayout.Click);
+            _chkConnectionZone.Checked = (layoutIdx == (int)ZoneLayout.Connection);
+
+            // 标题区域默认锚定为正中
+            if (layoutIdx == (int)ZoneLayout.Title && _cmbAnchor.SelectedIndex == 0)
+                _cmbAnchor.SelectedIndex = (int)ZoneAnchor.MiddleCenter;
+
+            UpdateConnectionVisibility();
+            UpdateXYLabels();
+        }
+
+        /// <summary>类型复选框变化时同步布局下拉</summary>
+        private void OnZoneTypeChanged(object sender, EventArgs e)
+        {
+            // 根据复选框状态更新布局下拉
+            if (_chkTitleZone.Checked)
+                _cmbLayout.SelectedIndex = (int)ZoneLayout.Title;
+            else if (_chkMemberZone.Checked)
+                _cmbLayout.SelectedIndex = (int)ZoneLayout.Member;
+            else if (_chkClickZone.Checked)
+                _cmbLayout.SelectedIndex = (int)ZoneLayout.Click;
+            else if (_chkConnectionZone.Checked)
+                _cmbLayout.SelectedIndex = (int)ZoneLayout.Connection;
+            else
+                _cmbLayout.SelectedIndex = (int)ZoneLayout.None;
+
+            UpdateConnectionVisibility();
+        }
+
+        /// <summary>锚定方式变化时更新 X/Y 标签和范围</summary>
+        private void OnAnchorChanged(object sender, EventArgs e)
+        {
+            UpdateXYLabels();
+        }
+
+        /// <summary>更新 X/Y 标签：绝对定位时为"X/Y"，其他时为"偏移X/Y"</summary>
+        private void UpdateXYLabels()
+        {
+            bool isAbsolute = (_cmbAnchor.SelectedIndex == 0);
+            _lblX.Text = isAbsolute ? "X：" : "偏移X：";
+            _lblY.Text = isAbsolute ? "Y：" : "偏移Y：";
+            // 偏移模式允许负值
+            if (!isAbsolute)
+            {
+                _numX.Minimum = -1m;
+                _numY.Minimum = -1m;
+            }
+            else
+            {
+                _numX.Minimum = 0m;
+                _numY.Minimum = 0m;
+                if (_numX.Value < 0) _numX.Value = 0;
+                if (_numY.Value < 0) _numY.Value = 0;
+            }
+        }
+
+        /// <summary>连接区域属性仅当勾选连接区域时显示</summary>
+        private void UpdateConnectionVisibility()
+        {
+            bool showConn = _chkConnectionZone.Checked;
+            _chkCanStart.Visible = showConn;
+            _chkCanEnd.Visible = showConn;
+            _chkAllowSelfConnect.Visible = showConn;
+            _cmbLineTypes.Visible = showConn;
+        }
+
+        private void OnPickBorderColor(object sender, EventArgs e)
+        {
+            _colorDialog.Color = _btnBorderColor.BackColor;
+            if (_colorDialog.ShowDialog() == DialogResult.OK)
+                _btnBorderColor.BackColor = _colorDialog.Color;
+        }
+
+        private void OnPickFillColor(object sender, EventArgs e)
+        {
+            _colorDialog.Color = _btnFillColor.BackColor;
+            if (_colorDialog.ShowDialog() == DialogResult.OK)
+                _btnFillColor.BackColor = _colorDialog.Color;
+        }
+
+        private void OnDelete(object sender, EventArgs e)
+        {
+            if (MessageBox.Show("确定删除此区域？", "确认删除",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+            {
+                DeleteRequested = true;
+                this.DialogResult = DialogResult.OK;
+                this.Close();
+            }
         }
 
         private static decimal ClampDecimal(float v)
         {
-            if (v < 0f) v = 0f;
+            if (v < -1f) v = -1f;
             if (v > 1f) v = 1f;
             return (decimal)v;
         }
 
-        private NumericUpDown MakeNum(int x, int y)
+        private NumericUpDown MakeNum(int x, int y, int w)
         {
             NumericUpDown num = new NumericUpDown();
             num.Location = new Point(x, y);
-            num.Size = new Size(115, 22);
+            num.Size = new Size(w, 22);
             num.DecimalPlaces = 2;
             num.Minimum = 0m;
             num.Maximum = 1m;
@@ -2002,7 +2714,7 @@ namespace DiagramDesigner.Controls
         protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
         {
             base.OnClosing(e);
-            if (this.DialogResult == DialogResult.OK)
+            if (this.DialogResult == DialogResult.OK && !DeleteRequested)
             {
                 string name = _txtName.Text.Trim();
                 if (string.IsNullOrEmpty(name))
@@ -2012,6 +2724,7 @@ namespace DiagramDesigner.Controls
                 ResultZone.Name = name;
                 ResultZone.Layout = (ZoneLayout)_cmbLayout.SelectedIndex;
                 ResultZone.Scaling = (ZoneScaling)_cmbScaling.SelectedIndex;
+                ResultZone.Anchor = (ZoneAnchor)_cmbAnchor.SelectedIndex;
                 ResultZone.X = (float)_numX.Value;
                 ResultZone.Y = (float)_numY.Value;
                 ResultZone.Width = (float)_numW.Value;
@@ -2019,6 +2732,26 @@ namespace DiagramDesigner.Controls
                 ResultZone.ShowBorder = _chkShowBorder.Checked;
                 ResultZone.IsTitleZone = _chkTitleZone.Checked;
                 ResultZone.IsMemberZone = _chkMemberZone.Checked;
+                ResultZone.IsClickZone = _chkClickZone.Checked;
+                ResultZone.IsConnectionZone = _chkConnectionZone.Checked;
+                ResultZone.BorderColor = new XmlColor(_btnBorderColor.BackColor);
+                ResultZone.FillColor = new XmlColor(_btnFillColor.BackColor);
+
+                // 连接区域属性
+                ResultZone.CanStart = _chkCanStart.Checked;
+                ResultZone.CanEnd = _chkCanEnd.Checked;
+                ResultZone.AllowSelfConnect = _chkAllowSelfConnect.Checked;
+                switch (_cmbLineTypes.SelectedIndex)
+                {
+                    case 0: ResultZone.AllowedLineTypes = "Straight,Curve,Orthogonal"; break;
+                    case 1: ResultZone.AllowedLineTypes = "Straight"; break;
+                    case 2: ResultZone.AllowedLineTypes = "Curve"; break;
+                    case 3: ResultZone.AllowedLineTypes = "Orthogonal"; break;
+                    case 4: ResultZone.AllowedLineTypes = "Straight,Curve"; break;
+                    case 5: ResultZone.AllowedLineTypes = "Straight,Orthogonal"; break;
+                    case 6: ResultZone.AllowedLineTypes = "Curve,Orthogonal"; break;
+                    default: ResultZone.AllowedLineTypes = "Straight,Curve,Orthogonal"; break;
+                }
             }
         }
     }

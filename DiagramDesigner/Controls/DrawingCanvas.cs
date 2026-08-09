@@ -25,7 +25,6 @@ namespace DiagramDesigner.Controls
         private bool _isSelecting = false;
         private PointF _dragStart;
         private PointF _lastMousePos;
-        private ShapeBase _dragShape;
         private List<ShapeBase> _draggingShapes = new List<ShapeBase>();
         private PointF[] _dragOriginalPositions;
         private ShapeBase _connectStartShape;
@@ -40,6 +39,12 @@ namespace DiagramDesigner.Controls
         private RectangleF _resizeOriginalBounds;
         private PointF _resizeStartPoint;
         private CanvasConfig _config = new CanvasConfig();
+
+        // === Zone 交互与内联编辑 ===
+        private TextBox _inlineEditBox;
+        private GenericShape _inlineEditingShape;
+        private int _inlineEditingMemberIndex = -1;
+        private ShapeZone _connectionStartZone;
 
         public DrawingCanvas()
         {
@@ -122,6 +127,8 @@ namespace DiagramDesigner.Controls
         public event EventHandler<ConnectionEventArgs> ConnectionAdded;
         /// <summary>连线删除时触发</summary>
         public event EventHandler<ConnectionEventArgs> ConnectionDeleted;
+        /// <summary>点击区域被点击时触发，携带图形和 Zone 信息</summary>
+        public event EventHandler<ZoneClickEventArgs> ZoneClicked;
 
         public void OnSelectionChanged()
         {
@@ -196,6 +203,41 @@ namespace DiagramDesigner.Controls
 
             if (shape != null)
             {
+                // Zone 命中测试：连接区域和点击区域拦截鼠标事件
+                GenericShape gs = shape as GenericShape;
+                if (gs != null)
+                {
+                    ShapeZone zone = gs.HitTestZone(worldPos);
+                    if (zone != null && (zone.IsConnectionZone || zone.IsClickZone))
+                    {
+                        // 选中图形
+                        if (!shape.Selected && (Control.ModifierKeys & Keys.Control) != Keys.Control)
+                            _document.ClearSelection();
+                        shape.Selected = true;
+                        OnSelectionChanged();
+
+                        if (zone.IsConnectionZone)
+                        {
+                            // 从连接区域开始连线
+                            _connectStartShape = shape;
+                            _connectionStartZone = zone;
+                            _connectStartPoint = worldPos;
+                            _connectCurrentPoint = worldPos;
+                            _isConnecting = true;
+                            Invalidate();
+                            return;
+                        }
+                        else // IsClickZone
+                        {
+                            // 触发点击区域行为
+                            if (ZoneClicked != null)
+                                ZoneClicked(this, new ZoneClickEventArgs(gs, zone));
+                            Invalidate();
+                            return;
+                        }
+                    }
+                }
+
                 if (!shape.Selected && (Control.ModifierKeys & Keys.Control) != Keys.Control)
                     _document.ClearSelection();
 
@@ -214,7 +256,6 @@ namespace DiagramDesigner.Controls
                     return;
                 }
 
-                _dragShape = shape;
                 _isDragging = true;
                 _dragStart = worldPos;
 
@@ -546,7 +587,6 @@ namespace DiagramDesigner.Controls
             if (_isDragging)
             {
                 _isDragging = false;
-                _dragShape = null;
 
                 UpdateContainerMembership(_draggingShapes);
                 _draggingShapes.Clear();
@@ -585,6 +625,171 @@ namespace DiagramDesigner.Controls
 
             Invalidate();
         }
+
+        /// <summary>
+        /// 双击事件：在标题 Zone 上启动内联标题编辑，
+        /// 在成员上启动内联成员编辑。
+        /// </summary>
+        protected override void OnDoubleClick(EventArgs e)
+        {
+            base.OnDoubleClick(e);
+            MouseEventArgs me = (MouseEventArgs)e;
+            if (me.Button != MouseButtons.Left)
+                return;
+
+            PointF worldPos = ScreenToWorld(me.Location);
+            ShapeBase shape = _document.HitTestShape(worldPos);
+            GenericShape gs = shape as GenericShape;
+            if (gs == null)
+                return;
+
+            // 标题 Zone 双击 → 内联编辑标题（仅设计时）
+            ShapeZone zone = gs.HitTestZone(worldPos);
+            if (zone == null)
+            {
+                // 非功能 Zone 也检查标题 Zone（HitTestZone 只返回功能 Zone）
+                zone = gs.FindZoneByName("Title");
+            }
+            if (zone != null && zone.IsTitleZone && _config.DesignMode)
+            {
+                RectangleF titleRect = gs.GetTitleZoneBounds();
+                if (titleRect.Contains(worldPos))
+                {
+                    StartInlineEditTitle(gs);
+                    return;
+                }
+            }
+
+            // 成员双击 → 内联编辑成员
+            int memberIdx = gs.HitTestMember(worldPos);
+            if (memberIdx >= 0)
+            {
+                StartInlineEditMember(gs, memberIdx);
+                return;
+            }
+        }
+
+        #region 内联编辑
+
+        /// <summary>启动标题内联编辑：在标题 Zone 上覆盖 TextBox</summary>
+        public void StartInlineEditTitle(GenericShape shape)
+        {
+            if (_inlineEditBox != null)
+                EndInlineEdit();
+
+            _inlineEditingShape = shape;
+            _inlineEditingMemberIndex = -1;
+
+            RectangleF titleRect = shape.GetTitleZoneBounds();
+            titleRect.Inflate(-4f, -2f);
+            Point screenPos = WorldToScreen(new PointF(titleRect.X, titleRect.Y));
+            int screenW = Math.Max(60, (int)(titleRect.Width * _zoom));
+            int screenH = Math.Max(20, (int)(titleRect.Height * _zoom));
+
+            _inlineEditBox = new TextBox();
+            _inlineEditBox.Location = screenPos;
+            _inlineEditBox.Size = new Size(screenW, screenH);
+            _inlineEditBox.Text = shape.Name;
+            _inlineEditBox.Font = new Font("Microsoft YaHei", 10f);
+            _inlineEditBox.BorderStyle = BorderStyle.FixedSingle;
+            _inlineEditBox.KeyDown += new KeyEventHandler(OnInlineEditKeyDown);
+            _inlineEditBox.LostFocus += new EventHandler(OnInlineEditLostFocus);
+            this.Controls.Add(_inlineEditBox);
+            _inlineEditBox.Focus();
+            _inlineEditBox.SelectAll();
+        }
+
+        /// <summary>启动成员内联编辑：在成员行上覆盖 TextBox</summary>
+        public void StartInlineEditMember(GenericShape shape, int memberIndex)
+        {
+            if (memberIndex < 0 || memberIndex >= shape.Members.Count)
+                return;
+
+            if (_inlineEditBox != null)
+                EndInlineEdit();
+
+            _inlineEditingShape = shape;
+            _inlineEditingMemberIndex = memberIndex;
+
+            RectangleF memberRect = shape.GetMemberBounds(memberIndex);
+            Point screenPos = WorldToScreen(new PointF(memberRect.X, memberRect.Y));
+            int screenW = Math.Max(60, (int)(memberRect.Width * _zoom));
+            int screenH = Math.Max(16, (int)(memberRect.Height * _zoom));
+
+            _inlineEditBox = new TextBox();
+            _inlineEditBox.Location = screenPos;
+            _inlineEditBox.Size = new Size(screenW, screenH);
+            _inlineEditBox.Text = shape.Members[memberIndex].GetSignature();
+            _inlineEditBox.Font = new Font("Microsoft YaHei", 9f);
+            _inlineEditBox.BorderStyle = BorderStyle.FixedSingle;
+            _inlineEditBox.KeyDown += new KeyEventHandler(OnInlineEditKeyDown);
+            _inlineEditBox.LostFocus += new EventHandler(OnInlineEditLostFocus);
+            this.Controls.Add(_inlineEditBox);
+            _inlineEditBox.Focus();
+            _inlineEditBox.SelectAll();
+        }
+
+        /// <summary>结束内联编辑：将 TextBox 内容写回图形并移除控件</summary>
+        public void EndInlineEdit()
+        {
+            if (_inlineEditBox == null)
+                return;
+
+            string text = _inlineEditBox.Text.Trim();
+
+            if (_inlineEditingMemberIndex >= 0 && _inlineEditingShape != null)
+            {
+                // 更新成员名称（从签名中提取或直接使用）
+                if (_inlineEditingMemberIndex < _inlineEditingShape.Members.Count)
+                {
+                    _inlineEditingShape.Members[_inlineEditingMemberIndex].Name = text;
+                }
+            }
+            else if (_inlineEditingShape != null)
+            {
+                // 更新标题
+                if (!string.IsNullOrEmpty(text))
+                {
+                    _inlineEditingShape.Name = text;
+                }
+            }
+
+            this.Controls.Remove(_inlineEditBox);
+            _inlineEditBox.Dispose();
+            _inlineEditBox = null;
+            _inlineEditingShape = null;
+            _inlineEditingMemberIndex = -1;
+
+            OnDocumentModified();
+            Invalidate();
+        }
+
+        private void OnInlineEditKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Enter)
+            {
+                EndInlineEdit();
+                e.SuppressKeyPress = true;
+            }
+            else if (e.KeyCode == Keys.Escape)
+            {
+                // 取消编辑
+                this.Controls.Remove(_inlineEditBox);
+                _inlineEditBox.Dispose();
+                _inlineEditBox = null;
+                _inlineEditingShape = null;
+                _inlineEditingMemberIndex = -1;
+                Invalidate();
+                e.SuppressKeyPress = true;
+            }
+        }
+
+        private void OnInlineEditLostFocus(object sender, EventArgs e)
+        {
+            EndInlineEdit();
+        }
+
+        #endregion
 
         protected override void OnDragOver(DragEventArgs e)
         {
@@ -693,20 +898,94 @@ namespace DiagramDesigner.Controls
             _isConnecting = false;
             ShapeBase endShape = _document.HitTestShape(worldPos);
 
-            if (_connectStartShape != null && endShape != null && _connectStartShape != endShape)
+            if (_connectStartShape != null && endShape != null)
             {
-                Connection conn = new Connection();
-                conn.FromShape = _connectStartShape;
-                conn.ToShape = endShape;
-                conn.Mode = GlobalConfig.Instance.DefaultConnectionMode;
-                conn.FromPoint = _connectStartShape.GetNearestConnectionPoint(endShape.Center);
-                conn.ToPoint = endShape.GetNearestConnectionPoint(_connectStartShape.Center);
-                _document.AddConnection(conn);
-                OnConnectionAdded(conn);
+                // 检查自连限制
+                bool isSelfConnect = (_connectStartShape == endShape);
+                if (isSelfConnect && _connectionStartZone != null && !_connectionStartZone.AllowSelfConnect)
+                {
+                    _connectStartShape = null;
+                    _connectionStartZone = null;
+                    Invalidate();
+                    return;
+                }
+
+                // 检查终点连接 Zone 的 CanEnd 属性
+                GenericShape endGs = endShape as GenericShape;
+                if (endGs != null && _connectionStartZone != null)
+                {
+                    ShapeZone endZone = endGs.HitTestZone(worldPos);
+                    if (endZone != null && endZone.IsConnectionZone && !endZone.CanEnd)
+                    {
+                        _connectStartShape = null;
+                        _connectionStartZone = null;
+                        Invalidate();
+                        return;
+                    }
+                }
+
+                // 检查起点 Zone 的 CanStart 属性
+                if (_connectionStartZone != null && !_connectionStartZone.CanStart)
+                {
+                    _connectStartShape = null;
+                    _connectionStartZone = null;
+                    Invalidate();
+                    return;
+                }
+
+                // 自连限制：无连接 Zone 时禁止自连
+                if (isSelfConnect && _connectionStartZone == null)
+                {
+                    _connectStartShape = null;
+                    _connectionStartZone = null;
+                    Invalidate();
+                    return;
+                }
+
+                // 确定连线模式：受连接 Zone 的 AllowedLineTypes 约束
+                ConnectionMode connMode = GlobalConfig.Instance.DefaultConnectionMode;
+                if (_connectionStartZone != null)
+                {
+                    string allowed = _connectionStartZone.AllowedLineTypes;
+                    if (!string.IsNullOrEmpty(allowed))
+                    {
+                        // 检查当前模式是否在允许列表中
+                        string[] parts = allowed.Split(',');
+                        bool modeAllowed = false;
+                        foreach (string p in parts)
+                        {
+                            string trimmed = p.Trim();
+                            if (trimmed == connMode.ToString())
+                            {
+                                modeAllowed = true;
+                                break;
+                            }
+                        }
+                        // 若当前模式不被允许，使用第一个允许的模式
+                        if (!modeAllowed && parts.Length > 0)
+                        {
+                            string first = parts[0].Trim();
+                            if (first == "Straight") connMode = ConnectionMode.Straight;
+                            else if (first == "Curve") connMode = ConnectionMode.Curve;
+                            else if (first == "Orthogonal") connMode = ConnectionMode.Orthogonal;
+                        }
+                    }
+                }
+
+                // 创建连线（含允许的自连）
+                Connection conn2 = new Connection();
+                conn2.FromShape = _connectStartShape;
+                conn2.ToShape = endShape;
+                conn2.Mode = connMode;
+                conn2.FromPoint = _connectStartShape.GetNearestConnectionPoint(endShape.Center);
+                conn2.ToPoint = endShape.GetNearestConnectionPoint(_connectStartShape.Center);
+                _document.AddConnection(conn2);
+                OnConnectionAdded(conn2);
                 OnDocumentModified();
             }
 
             _connectStartShape = null;
+            _connectionStartZone = null;
             Invalidate();
         }
 
