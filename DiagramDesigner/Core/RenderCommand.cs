@@ -315,7 +315,10 @@ namespace DiagramDesigner.Core
 
         /// <summary>
         /// 绘制复合多路径图形。支持逐路径布尔运算（邻居模式）。
-        /// 每条路径的 BoolOp 仅与紧邻的下层路径计算。
+        /// 每条路径的 BoolOp 作用于紧邻的下层路径（索引 i+1）。
+        /// 处理方向：自底向上（从最后一条路径开始）。
+        /// 最后一条路径的 BoolOp 始终视为 None（无下层路径）。
+        /// 描边：仅绘制布尔运算结果区域的轮廓，而非所有原始路径。
         /// </summary>
         private void DrawCompoundPolygon(Graphics g, RectangleF rect, ShapeColors colors, Color stroke, float scale)
         {
@@ -345,40 +348,70 @@ namespace DiagramDesigner.Core
                 absPaths.Add(gp);
             }
 
-            // 邻居模式布尔运算：每条路径的 BoolOp 仅与紧邻下层路径计算
-            // renderItems: 每项含 (路径索引, Region)
+            // 邻居模式布尔运算：每条路径的 BoolOp 作用于下方最近的非空路径
+            // 处理方向：自底向上（从最后一条路径向前处理）
             List<Region> renderRegions = new List<Region>();
             List<int> regionPathIndices = new List<int>();
+            // 记录哪些区域是独立的（未被布尔运算修改），可直接描边原始路径
+            List<bool> regionIsOriginal = new List<bool>();
 
-            for (int i = 0; i < absPaths.Count; i++)
+            for (int i = absPaths.Count - 1; i >= 0; i--)
             {
                 if (absPaths[i] == null)
                     continue;
 
-                BooleanOperation op = (i == 0) ? BooleanOperation.None : defs[i].BoolOp;
+                // 最后一条有效路径无 BoolOp（无下层路径）
+                BooleanOperation op = defs[i].BoolOp;
+
+                // 判断是否为最底层有效路径（下方无非空路径）
+                bool hasLowerPath = false;
+                for (int j = i + 1; j < absPaths.Count; j++)
+                {
+                    if (absPaths[j] != null)
+                    {
+                        hasLowerPath = true;
+                        break;
+                    }
+                }
+                if (!hasLowerPath)
+                    op = BooleanOperation.None;
 
                 if (op == BooleanOperation.None || op == BooleanOperation.Union)
                 {
                     // 独立路径：添加为新的渲染区域
                     renderRegions.Add(new Region(absPaths[i]));
                     regionPathIndices.Add(i);
+                    regionIsOriginal.Add(true);
                 }
                 else
                 {
-                    // Subtract/Intersect/Xor：查找紧邻下层路径的渲染区域
-                    int targetIdx = -1;
-                    for (int r = regionPathIndices.Count - 1; r >= 0; r--)
+                    // Subtract/Intersect/Xor：查找下方最近的非空路径的渲染区域
+                    int targetPathIdx = -1;
+                    for (int j = i + 1; j < absPaths.Count; j++)
                     {
-                        if (regionPathIndices[r] == i - 1)
+                        if (absPaths[j] != null)
                         {
-                            targetIdx = r;
+                            targetPathIdx = j;
                             break;
+                        }
+                    }
+
+                    int targetIdx = -1;
+                    if (targetPathIdx >= 0)
+                    {
+                        for (int r = regionPathIndices.Count - 1; r >= 0; r--)
+                        {
+                            if (regionPathIndices[r] == targetPathIdx)
+                            {
+                                targetIdx = r;
+                                break;
+                            }
                         }
                     }
 
                     if (targetIdx >= 0)
                     {
-                        // 对紧邻下层路径的区域应用布尔运算
+                        // 对下方非空路径的区域应用布尔运算
                         Region target = renderRegions[targetIdx];
                         switch (op)
                         {
@@ -392,13 +425,16 @@ namespace DiagramDesigner.Core
                                 target.Xor(absPaths[i]);
                                 break;
                         }
+                        // 标记该区域已被布尔运算修改，不能再描边原始路径
+                        regionIsOriginal[targetIdx] = false;
                     }
                     else
                     {
-                        // 紧邻下层路径无渲染区域（被消费或为空），
+                        // 下方非空路径无渲染区域（被消费或为空），
                         // 按独立路径处理
                         renderRegions.Add(new Region(absPaths[i]));
                         regionPathIndices.Add(i);
+                        regionIsOriginal.Add(true);
                     }
                 }
             }
@@ -413,15 +449,34 @@ namespace DiagramDesigner.Core
                 }
             }
 
-            // 描边：绘制所有原始路径的轮廓
+            // 描边：独立路径直接描边原始路径；布尔运算结果用 Region 描边
             if (_stroke)
             {
                 using (Pen pen = new Pen(stroke, _strokeWidth / scale))
+                using (Matrix mat = new Matrix())
                 {
-                    foreach (GraphicsPath gp in absPaths)
+                    for (int r = 0; r < renderRegions.Count; r++)
                     {
-                        if (gp != null)
-                            g.DrawPath(pen, gp);
+                        if (regionIsOriginal[r])
+                        {
+                            // 独立路径：直接描边原始 GraphicsPath
+                            int pathIdx = regionPathIndices[r];
+                            if (pathIdx >= 0 && absPaths[pathIdx] != null)
+                                g.DrawPath(pen, absPaths[pathIdx]);
+                        }
+                        else
+                        {
+                            // 布尔运算结果：从 Region 提取扫描矩形合并为路径描边
+                            RectangleF[] scans = renderRegions[r].GetRegionScans(mat);
+                            if (scans.Length == 0)
+                                continue;
+                            using (GraphicsPath outlinePath = new GraphicsPath())
+                            {
+                                foreach (RectangleF scan in scans)
+                                    outlinePath.AddRectangle(scan);
+                                g.DrawPath(pen, outlinePath);
+                            }
+                        }
                     }
                 }
             }
@@ -449,10 +504,11 @@ namespace DiagramDesigner.Core
                 return null;
 
             // 从 MultiPaths + 全局 BoolOp 转换
+            // 新语义：最后一条路径无 BoolOp（无下层路径），其余使用全局 BoolOp
             List<PathDef> defs = new List<PathDef>();
             for (int i = 0; i < _multiPaths.Count; i++)
             {
-                BooleanOperation op = (i == 0) ? BooleanOperation.None : _boolOp;
+                BooleanOperation op = (i == _multiPaths.Count - 1) ? BooleanOperation.None : _boolOp;
                 defs.Add(new PathDef(_multiPaths[i], op));
             }
             return defs;

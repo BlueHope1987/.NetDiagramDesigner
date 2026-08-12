@@ -315,17 +315,17 @@ namespace DiagramDesigner.Core
 
         /// <summary>
         /// 创建包图等需要左上角标题的 Zone。
-        /// 锚定为 TopLeft（左上角对齐到图形左上角）。
-        /// X = 0.24（距左边约 43px + 内边距 6 ≈ 50px），
-        /// Y = 0.04（距顶边约 6px + 内边距 4 ≈ 10px）。
+        /// 标题区域宽度与上方标签状区域（0~0.4）一致，并在标签区域内居中对齐。
+        /// 锚定为 TopLeft（左上角对齐到图形左上角），X=0, Y=0, Width=0.4。
+        /// 文字在 Zone 内水平+垂直居中，自然落在标签区域中央。
         /// </summary>
         public static ShapeZone CreateTopLeftTitleZone(float nameAreaTop)
         {
             ShapeZone zone = CreateDefaultTitleZone(nameAreaTop);
             zone.Anchor = ZoneAnchor.TopLeft;
-            zone.X = 0.24f;  // 向右偏移，使文字距左边约 50px
-            zone.Y = 0.04f;  // 向下偏移，使文字距顶边约 10px
-            zone.Width = 0.4f;  // 包图标题区较窄
+            zone.X = 0f;       // 与标签区域左边缘对齐
+            zone.Y = 0f;       // 与标签区域上边缘对齐
+            zone.Width = 0.4f; // 与标签区域宽度一致
             zone.Height = nameAreaTop;
             return zone;
         }

@@ -148,6 +148,9 @@ namespace DiagramDesigner.Controls
 
         private void DrawShapes(Graphics g)
         {
+            // 设置 Zone 可见性：仅设计模式下显示 Zone 视觉指示
+            GenericShape.RenderZoneVisuals = _config.DesignMode;
+
             List<ShapeBase> shapes = _document.Shapes;
             for (int i = 0; i < shapes.Count; i++)
             {

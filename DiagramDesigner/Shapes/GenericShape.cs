@@ -15,6 +15,13 @@ namespace DiagramDesigner.Shapes
     [Serializable]
     public class GenericShape : ShapeBase
     {
+        /// <summary>
+        /// 全局标志：是否渲染 Zone 的视觉指示（边框、填充、标签等）。
+        /// 由 DrawingCanvas 在绘制前设置：设计模式 = true，运行模式 = false。
+        /// Zone 仅用于定义区域和行为，非设计模式下应完全不可见。
+        /// </summary>
+        public static bool RenderZoneVisuals = true;
+
         private string _shapeTypeName = "";
         private List<ShapeMember> _members = new List<ShapeMember>();
         private List<ShapeState> _states = new List<ShapeState>();
@@ -354,8 +361,8 @@ namespace DiagramDesigner.Shapes
                 DrawFallback(g, colors, scale);
             }
 
-            // 2. 渲染 Zone 边框和 Zone 内绘制指令
-            if (effectiveZones != null)
+            // 2. 渲染 Zone 边框和 Zone 内绘制指令（仅设计模式可见）
+            if (RenderZoneVisuals && effectiveZones != null)
             {
                 foreach (ShapeZone zone in effectiveZones)
                 {

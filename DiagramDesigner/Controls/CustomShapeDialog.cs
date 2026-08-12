@@ -61,6 +61,7 @@ namespace DiagramDesigner.Controls
         private Button _btnEditZoneTB;
         private Button _btnDeleteZoneTB;
         private Button _btnBoolOp;
+        private Button _btnMergePaths;
         private ContextMenuStrip _boolOpMenu;
         private bool _suppressPathChange = false;
 
@@ -117,7 +118,8 @@ namespace DiagramDesigner.Controls
         {
             "提示：在画布上点击可添加顶点，拖拽顶点可调整位置，双击顶点可删除。",
             "提示：路径下拉菜单中区域（◈）始终显示在路径（▲）之上。选择区域可在画布中拖拽边角调整宽高。",
-            "提示：每条路径的布尔运算仅与紧邻的下层路径计算，依次逐层叠加显示组合结果。底层路径运算始终为无。",
+            "提示：每条路径的布尔运算作用于紧邻的下层路径，新路径插入到当前路径上方。最底层路径运算始终为无。",
+            "提示：合并按钮（⊕→1）可将布尔运算结果扁平化为单一新路径，产生干净的外轮廓。",
             "提示：标题区域默认垂直居中水平居中，类图/包图/容器等需容纳内容的图形默认顶部对齐。",
             "提示：添加标题区域后自动注册\"编辑标题\"行为（设计时）；添加成员区域后自动注册\"添加/删除成员\"行为（设计时+运行时）。",
             "提示：点击区域和连接区域为特殊功能区域，添加后自动注册对应的系统行为。连接区域可限定线型和自连。",
@@ -439,6 +441,12 @@ namespace DiagramDesigner.Controls
             _panelPathToolbar.Controls.Add(_btnBoolOp);
             bx += 38;
 
+            // 合并按钮：将布尔运算结果扁平化为单一路径
+            _btnMergePaths = MakeSmallButton("⊕→1", "合并（将布尔运算结果生成为单一新形状）", bx, 0, 40, 24);
+            _btnMergePaths.Click += new EventHandler(OnMergePaths);
+            _panelPathToolbar.Controls.Add(_btnMergePaths);
+            bx += 42;
+
             // 区域按钮
             _btnAddZoneTB = MakeSmallButton("+Z", "添加区域", bx, 0, 28, 24);
             _btnAddZoneTB.Click += new EventHandler(OnAddZone);
@@ -510,6 +518,375 @@ namespace DiagramDesigner.Controls
                 if (mi != null)
                     mi.Checked = (i == idx);
             }
+        }
+
+        /// <summary>
+        /// 合并按钮：将当前路径与下方最近的非空路径依据布尔运算合并为单一新形状。
+        /// 仅合并当前路径和下方一个非空路径（非全部路径）。
+        /// </summary>
+        private void OnMergePaths(object sender, EventArgs e)
+        {
+            if (_currentPathIndex < 0 || _currentPathIndex >= _paths.Count)
+                return;
+            List<PointF> currentPath = _paths[_currentPathIndex];
+            if (currentPath == null || currentPath.Count < 3)
+                return;
+            BooleanOperation currentOp = (_currentPathIndex < _pathBoolOps.Count)
+                ? _pathBoolOps[_currentPathIndex] : BooleanOperation.None;
+
+            // 查找下方最近的非空路径
+            int lowerIdx = -1;
+            for (int j = _currentPathIndex + 1; j < _paths.Count; j++)
+            {
+                if (_paths[j] != null && _paths[j].Count >= 3)
+                {
+                    lowerIdx = j;
+                    break;
+                }
+            }
+            if (lowerIdx < 0)
+                return; // 无下方非空路径
+
+            List<PointF> lowerPath = _paths[lowerIdx];
+
+            // 计算两条路径的包围盒
+            float minX = float.MaxValue, minY = float.MaxValue;
+            float maxX = float.MinValue, maxY = float.MinValue;
+            foreach (PointF pt in currentPath)
+            {
+                if (pt.X < minX) minX = pt.X;
+                if (pt.Y < minY) minY = pt.Y;
+                if (pt.X > maxX) maxX = pt.X;
+                if (pt.Y > maxY) maxY = pt.Y;
+            }
+            foreach (PointF pt in lowerPath)
+            {
+                if (pt.X < minX) minX = pt.X;
+                if (pt.Y < minY) minY = pt.Y;
+                if (pt.X > maxX) maxX = pt.X;
+                if (pt.Y > maxY) maxY = pt.Y;
+            }
+            if (maxX - minX < 1 || maxY - minY < 1)
+                return;
+
+            // 使用 Region 计算布尔运算结果
+            GraphicsPath upperGP = new GraphicsPath();
+            upperGP.AddPolygon(currentPath.ToArray());
+            GraphicsPath lowerGP = new GraphicsPath();
+            lowerGP.AddPolygon(lowerPath.ToArray());
+
+            Region resultRegion;
+            switch (currentOp)
+            {
+                case BooleanOperation.Subtract:
+                    resultRegion = new Region(lowerGP);
+                    resultRegion.Exclude(upperGP);
+                    break;
+                case BooleanOperation.Intersect:
+                    resultRegion = new Region(lowerGP);
+                    resultRegion.Intersect(upperGP);
+                    break;
+                case BooleanOperation.Xor:
+                    resultRegion = new Region(lowerGP);
+                    resultRegion.Xor(upperGP);
+                    break;
+                case BooleanOperation.Union:
+                    resultRegion = new Region(lowerGP);
+                    resultRegion.Union(upperGP);
+                    break;
+                default:
+                    resultRegion = new Region(lowerGP);
+                    resultRegion.Union(upperGP);
+                    break;
+            }
+
+            // 通过位图轮廓追踪提取外轮廓
+            List<Region> regionList = new List<Region> { resultRegion };
+            List<PointF> mergedPath = TraceRegionOutline(regionList, minX, minY, maxX, maxY);
+
+            resultRegion.Dispose();
+            upperGP.Dispose();
+            lowerGP.Dispose();
+
+            if (mergedPath.Count < 3)
+                return;
+
+            // 替换当前路径为合并结果，删除下方路径
+            _paths[_currentPathIndex] = mergedPath;
+            _pathBoolOps[_currentPathIndex] = BooleanOperation.None;
+            _paths.RemoveAt(lowerIdx);
+            _pathBoolOps.RemoveAt(lowerIdx);
+            _selectedVertex = -1;
+            _dragIndex = -1;
+            _closedPath = true;
+            _filled = true;
+
+            RefreshPathCombo();
+            _canvasPanel.Invalidate();
+        }
+
+        /// <summary>
+        /// 通过位图轮廓追踪从 Region 列表提取外轮廓多边形。
+        /// 使用 Moore 边界追踪算法，然后简化多边形。
+        /// </summary>
+        private List<PointF> TraceRegionOutline(List<Region> regions, float minX, float minY, float maxX, float maxY)
+        {
+            int padding = 2;
+            int w = (int)Math.Ceiling(maxX - minX) + padding * 2;
+            int h = (int)Math.Ceiling(maxY - minY) + padding * 2;
+            if (w <= 0 || h <= 0)
+                return new List<PointF>();
+
+            // 在位图上填充所有 Region
+            using (Bitmap bmp = new Bitmap(w, h))
+            using (Graphics bg = Graphics.FromImage(bmp))
+            {
+                bg.Clear(Color.White);
+                bg.TranslateTransform(-minX + padding, -minY + padding);
+                using (Brush brush = new SolidBrush(Color.Black))
+                {
+                    foreach (Region r in regions)
+                        bg.FillRegion(brush, r);
+                }
+
+                // Moore 边界追踪
+                List<Point> boundary = MooreBoundaryTrace(bmp);
+                if (boundary.Count < 3)
+                    return new List<PointF>();
+
+                // 转换回原始坐标
+                List<PointF> outline = new List<PointF>();
+                foreach (Point p in boundary)
+                    outline.Add(new PointF(p.X + minX - padding, p.Y + minY - padding));
+
+                // 简化多边形（RDP 算法，容差 2.0 像素）
+                outline = SimplifyPolygon(outline, 2.0f);
+
+                return outline;
+            }
+        }
+
+        /// <summary>Moore 边界追踪算法：从最上方的黑色像素开始顺时针追踪边界</summary>
+        private List<Point> MooreBoundaryTrace(Bitmap bmp)
+        {
+            int w = bmp.Width;
+            int h = bmp.Height;
+
+            // 查找起始点：最上方的黑色像素
+            int startX = -1, startY = -1;
+            for (int y = 0; y < h; y++)
+            {
+                for (int x = 0; x < w; x++)
+                {
+                    if (bmp.GetPixel(x, y).R < 128)
+                    {
+                        startX = x;
+                        startY = y;
+                        break;
+                    }
+                }
+                if (startX >= 0)
+                    break;
+            }
+            if (startX < 0)
+                return new List<Point>();
+
+            // Moore 邻域追踪
+            List<Point> boundary = new List<Point>();
+            Point current = new Point(startX, startY);
+            Point backtrack = new Point(startX - 1, startY); // 左侧白像素
+
+            // 8 方向顺时针：从 backtrack 方向开始
+            int[] dx = { 0, 1, 1, 1, 0, -1, -1, -1 };
+            int[] dy = { -1, -1, 0, 1, 1, 1, 0, -1 };
+
+            int maxSteps = w * h * 4;
+            int steps = 0;
+
+            do
+            {
+                boundary.Add(current);
+                steps++;
+                if (steps > maxSteps)
+                    break;
+
+                // 找到 backtrack 相对于 current 的方向
+                int bdx = backtrack.X - current.X;
+                int bdy = backtrack.Y - current.Y;
+                int startDir = 0;
+                for (int d = 0; d < 8; d++)
+                {
+                    if (dx[d] == bdx && dy[d] == bdy)
+                    {
+                        startDir = d;
+                        break;
+                    }
+                }
+
+                // 顺时针扫描 8 邻域，找到下一个黑色像素
+                Point next = current;
+                Point nextBacktrack = current;
+                bool found = false;
+                for (int i = 0; i < 8; i++)
+                {
+                    int dir = (startDir + i) % 8;
+                    int nx = current.X + dx[dir];
+                    int ny = current.Y + dy[dir];
+                    if (nx < 0 || nx >= w || ny < 0 || ny >= h)
+                    {
+                        nextBacktrack = new Point(nx, ny);
+                        continue;
+                    }
+                    if (bmp.GetPixel(nx, ny).R < 128)
+                    {
+                        next = new Point(nx, ny);
+                        found = true;
+                        break;
+                    }
+                    nextBacktrack = new Point(nx, ny);
+                }
+
+                if (!found)
+                    break;
+
+                backtrack = nextBacktrack;
+                current = next;
+            }
+            while (!(current.X == startX && current.Y == startY));
+
+            return boundary;
+        }
+
+        /// <summary>简化多边形：使用 Ramer-Douglas-Peucker 算法移除冗余点</summary>
+        private List<PointF> SimplifyPolygon(List<PointF> points, float tolerance)
+        {
+            if (points.Count <= 3)
+                return points;
+
+            // 先移除连续重复点
+            List<PointF> cleaned = new List<PointF>();
+            foreach (PointF p in points)
+            {
+                if (cleaned.Count == 0)
+                {
+                    cleaned.Add(p);
+                }
+                else
+                {
+                    PointF last = cleaned[cleaned.Count - 1];
+                    float dx = p.X - last.X;
+                    float dy = p.Y - last.Y;
+                    if (dx * dx + dy * dy > 0.5f)
+                        cleaned.Add(p);
+                }
+            }
+            if (cleaned.Count <= 3)
+                return cleaned;
+
+            // RDP 简化闭环：对每条边分别应用 RDP，然后合并
+            // 将闭环拆分为两半分别在首尾点处断开
+            PointF anchor = cleaned[0];
+            PointF farthest = cleaned[cleaned.Count / 2];
+
+            // 从 anchor 到 farthest 简化前半段
+            List<PointF> firstHalf = new List<PointF>();
+            for (int i = 0; i <= cleaned.Count / 2; i++)
+                firstHalf.Add(cleaned[i]);
+            List<PointF> simplifiedFirst = RdpSimplify(firstHalf, tolerance);
+
+            // 从 farthest 到 anchor 简化后半段
+            List<PointF> secondHalf = new List<PointF>();
+            for (int i = cleaned.Count / 2; i < cleaned.Count; i++)
+                secondHalf.Add(cleaned[i]);
+            secondHalf.Add(anchor);
+            List<PointF> simplifiedSecond = RdpSimplify(secondHalf, tolerance);
+
+            // 合并：前半段（去掉末尾）+ 后半段（去掉末尾，因为末尾=anchor=首）
+            List<PointF> result = new List<PointF>();
+            for (int i = 0; i < simplifiedFirst.Count - 1; i++)
+                result.Add(simplifiedFirst[i]);
+            for (int i = 1; i < simplifiedSecond.Count - 1; i++)
+                result.Add(simplifiedSecond[i]);
+
+            return result.Count >= 3 ? result : cleaned;
+        }
+
+        /// <summary>Ramer-Douglas-Peucker 算法：递归简化折线</summary>
+        private List<PointF> RdpSimplify(List<PointF> points, float tolerance)
+        {
+            if (points.Count <= 2)
+                return new List<PointF>(points);
+
+            float tolSq = tolerance * tolerance;
+
+            // 找到距离首尾连线最远的点
+            PointF first = points[0];
+            PointF last = points[points.Count - 1];
+            float maxDistSq = 0;
+            int maxIdx = 0;
+
+            for (int i = 1; i < points.Count - 1; i++)
+            {
+                float dSq = PointLineDistanceSq(points[i], first, last);
+                if (dSq > maxDistSq)
+                {
+                    maxDistSq = dSq;
+                    maxIdx = i;
+                }
+            }
+
+            List<PointF> result = new List<PointF>();
+
+            if (maxDistSq > tolSq)
+            {
+                // 递归简化两段
+                List<PointF> left = new List<PointF>();
+                for (int i = 0; i <= maxIdx; i++)
+                    left.Add(points[i]);
+                List<PointF> simplifiedLeft = RdpSimplify(left, tolerance);
+
+                List<PointF> right = new List<PointF>();
+                for (int i = maxIdx; i < points.Count; i++)
+                    right.Add(points[i]);
+                List<PointF> simplifiedRight = RdpSimplify(right, tolerance);
+
+                // 合并（去掉中间重复点）
+                for (int i = 0; i < simplifiedLeft.Count - 1; i++)
+                    result.Add(simplifiedLeft[i]);
+                for (int i = 0; i < simplifiedRight.Count; i++)
+                    result.Add(simplifiedRight[i]);
+            }
+            else
+            {
+                // 所有点都在容差范围内，只保留首尾
+                result.Add(first);
+                result.Add(last);
+            }
+
+            return result;
+        }
+
+        /// <summary>点到线段的垂直距离的平方</summary>
+        private static float PointLineDistanceSq(PointF p, PointF a, PointF b)
+        {
+            float dx = b.X - a.X;
+            float dy = b.Y - a.Y;
+            float lenSq = dx * dx + dy * dy;
+            if (lenSq < 0.0001f)
+            {
+                // a 和 b 重合，返回到 a 的距离
+                float ddx = p.X - a.X;
+                float ddy = p.Y - a.Y;
+                return ddx * ddx + ddy * ddy;
+            }
+            // 投影参数 t
+            float t = ((p.X - a.X) * dx + (p.Y - a.Y) * dy) / lenSq;
+            t = Math.Max(0f, Math.Min(1f, t)); // 钳制到 [0,1]
+            float projX = a.X + t * dx;
+            float projY = a.Y + t * dy;
+            float ex = p.X - projX;
+            float ey = p.Y - projY;
+            return ex * ex + ey * ey;
         }
 
         /// <summary>构建底部信息窗格，提供上下文相关提示并自动轮播</summary>
@@ -1318,7 +1695,7 @@ namespace DiagramDesigner.Controls
                 cmd.MultiPaths.Add(normalized);
                 cmd.PathDefs.Add(new PathDef(normalized, validOps[i]));
             }
-            cmd.BoolOp = validOps.Count > 0 ? validOps[0] : BooleanOperation.None;
+            cmd.BoolOp = validOps.Count > 1 ? validOps[0] : BooleanOperation.None;  // 全局 BoolOp 用于旧版兼容（第一条路径的运算）
             cmd.X = 0; cmd.Y = 0;
             cmd.Width = 1; cmd.Height = 1;
             cmd.FillColor = _filled ? _geomFillColor : Color.Transparent;
@@ -1484,7 +1861,9 @@ namespace DiagramDesigner.Controls
                 {
                     BooleanOperation currentOp = (_currentPathIndex < _pathBoolOps.Count)
                         ? _pathBoolOps[_currentPathIndex] : BooleanOperation.None;
-                    info = string.Format("路径 {0}/{1}   布尔: {2}", _currentPathIndex + 1, _paths.Count, currentOp);
+                    bool isLastPath = (_currentPathIndex >= _paths.Count - 1);
+                    string boolInfo = isLastPath ? "无（最底层）" : currentOp.ToString();
+                    info = string.Format("路径 {0}/{1}   布尔(→下层): {2}", _currentPathIndex + 1, _paths.Count, boolInfo);
                 }
                 g.DrawString(info, font, brush, 6, 4);
             }
@@ -1643,8 +2022,12 @@ namespace DiagramDesigner.Controls
                 if (zone.Height < 0.05f) zone.Height = 0.05f;
                 if (zone.Width > 1f) zone.Width = 1f;
                 if (zone.Height > 1f) zone.Height = 1f;
-                if (zone.X < 0f) zone.X = 0f;
-                if (zone.Y < 0f) zone.Y = 0f;
+                // 绝对定位时 X/Y 不能为负；偏移模式允许负值
+                if (zone.Anchor == ZoneAnchor.Absolute)
+                {
+                    if (zone.X < 0f) zone.X = 0f;
+                    if (zone.Y < 0f) zone.Y = 0f;
+                }
 
                 _zoneDragStart = e.Location;
                 _canvasPanel.Invalidate();
@@ -1797,9 +2180,12 @@ namespace DiagramDesigner.Controls
 
         private void OnNewPath(object sender, EventArgs e)
         {
-            _paths.Add(new List<PointF>());
-            _pathBoolOps.Add(BooleanOperation.None);
-            _currentPathIndex = _paths.Count - 1;
+            // 新路径插入到当前路径上方（当前索引处），当前路径下移
+            int insertAt = (_currentPathIndex >= 0 && _currentPathIndex < _paths.Count)
+                ? _currentPathIndex : _paths.Count;
+            _paths.Insert(insertAt, new List<PointF>());
+            _pathBoolOps.Insert(insertAt, BooleanOperation.None);
+            _currentPathIndex = insertAt;
             _selectedVertex = -1;
             _dragIndex = -1;
             _selectedZoneIndex = -1;
@@ -1962,10 +2348,37 @@ namespace DiagramDesigner.Controls
             _btnAddZoneTB.Enabled = true;
             _btnEditZoneTB.Enabled = isZone;
             _btnDeleteZoneTB.Enabled = isZone;
-            // 布尔运算按钮（路径模式启用，区域模式禁用）
-            _btnBoolOp.Enabled = !isZone;
+            // 布尔运算按钮：路径模式启用，当前路径有下方非空路径时才有意义
+            _btnBoolOp.Enabled = !isZone && HasLowerValidPath();
+            // 合并按钮：当前路径有下方非空路径时启用
+            _btnMergePaths.Enabled = !isZone && HasLowerValidPath();
             if (!isZone)
                 UpdateBoolOpButtonText();
+        }
+
+        /// <summary>统计有效路径数（顶点数 >= 3）</summary>
+        private int CountValidPaths()
+        {
+            int count = 0;
+            foreach (List<PointF> path in _paths)
+            {
+                if (path != null && path.Count >= 3)
+                    count++;
+            }
+            return count;
+        }
+
+        /// <summary>检查当前路径下方是否存在非空有效路径</summary>
+        private bool HasLowerValidPath()
+        {
+            if (_currentPathIndex < 0 || _currentPathIndex >= _paths.Count)
+                return false;
+            for (int j = _currentPathIndex + 1; j < _paths.Count; j++)
+            {
+                if (_paths[j] != null && _paths[j].Count >= 3)
+                    return true;
+            }
+            return false;
         }
 
         #endregion
@@ -2535,10 +2948,12 @@ namespace DiagramDesigner.Controls
             // 预填数值
             if (editZone != null)
             {
-                _numX.Value = ClampDecimal(editZone.X);
-                _numY.Value = ClampDecimal(editZone.Y);
-                _numW.Value = ClampDecimal(editZone.Width);
-                _numH.Value = ClampDecimal(editZone.Height);
+                // 先根据锚定方式调整 X/Y 的范围（允许负值用于偏移模式）
+                UpdateXYLabels();
+                _numX.Value = ClampDecimal(editZone.X, editZone.Anchor);
+                _numY.Value = ClampDecimal(editZone.Y, editZone.Anchor);
+                _numW.Value = ClampDecimal(editZone.Width, ZoneAnchor.Absolute);
+                _numH.Value = ClampDecimal(editZone.Height, ZoneAnchor.Absolute);
                 _btnBorderColor.BackColor = editZone.BorderColor.ToColor();
                 _btnFillColor.BackColor = editZone.FillColor.ToColor();
             }
@@ -2692,10 +3107,15 @@ namespace DiagramDesigner.Controls
             }
         }
 
-        private static decimal ClampDecimal(float v)
+        /// <summary>将浮点值钳制到 NumericUpDown 可接受的范围。
+        /// 绝对定位：[0, 1]；偏移模式：[-1, 1]。</summary>
+        private static decimal ClampDecimal(float v, ZoneAnchor anchor)
         {
-            if (v < -1f) v = -1f;
-            if (v > 1f) v = 1f;
+            bool isAbsolute = (anchor == ZoneAnchor.Absolute);
+            float min = isAbsolute ? 0f : -1f;
+            float max = 1f;
+            if (v < min) v = min;
+            if (v > max) v = max;
             return (decimal)v;
         }
 
