@@ -49,6 +49,7 @@ namespace DiagramDesigner.Controls
         private Button _btnHeaderColor;
         private Button _btnCopyDefault;
         private Button _btnClearGeom;
+        private Button _btnCircle;
 
         // 多路径工具栏控件
         private Panel _panelPathToolbar;
@@ -75,7 +76,7 @@ namespace DiagramDesigner.Controls
         private int _infoTipIndex = 0;
 
         // 编辑器画布数据（多路径 + 逐路径布尔运算）
-        private List<List<PointF>> _paths = new List<List<PointF>>();
+        private List<List<CurveVertex>> _paths = new List<List<CurveVertex>>();
         private List<BooleanOperation> _pathBoolOps = new List<BooleanOperation>();
         private int _currentPathIndex = 0;
         private int _dragIndex = -1;
@@ -94,6 +95,11 @@ namespace DiagramDesigner.Controls
         private int _zoneDragMode = 0;        // 0=无, 1=移动, 2=调整大小
         private int _zoneDragHandle = -1;     // 拖拽的手柄索引 (0~3 for corners)
         private Point _zoneDragStart;
+
+        // 贝塞尔句柄拖拽状态
+        // _dragHandleType: 0=无, 1=拖拽HandleOut, 2=拖拽HandleIn
+        private int _dragHandleType = 0;
+        private int _dragHandleVertex = -1;
 
         /// <summary>当前正在编辑的状态索引，-1 表示无选择</summary>
         private int _editingStateIndex = -1;
@@ -360,6 +366,11 @@ namespace DiagramDesigner.Controls
             _btnClearGeom = MakeSmallButton("CLR", "清除图形", tbX, toolbarY, tbBtnW + 10, tbBtnH);
             _btnClearGeom.Click += new EventHandler(OnClearGeom);
             page.Controls.Add(_btnClearGeom);
+            tbX += tbBtnW + 10 + tbGap;
+
+            _btnCircle = MakeSmallButton("○", "绘制圆形（4顶点贝塞尔近似）", tbX, toolbarY, tbBtnW, tbBtnH);
+            _btnCircle.Click += new EventHandler(OnCreateCircle);
+            page.Controls.Add(_btnCircle);
 
             // 第三行：路径/区域工具栏（单行）
             BuildPathToolbar(page, rightX, 62);
@@ -528,7 +539,7 @@ namespace DiagramDesigner.Controls
         {
             if (_currentPathIndex < 0 || _currentPathIndex >= _paths.Count)
                 return;
-            List<PointF> currentPath = _paths[_currentPathIndex];
+            List<CurveVertex> currentPath = _paths[_currentPathIndex];
             if (currentPath == null || currentPath.Count < 3)
                 return;
             BooleanOperation currentOp = (_currentPathIndex < _pathBoolOps.Count)
@@ -547,20 +558,22 @@ namespace DiagramDesigner.Controls
             if (lowerIdx < 0)
                 return; // 无下方非空路径
 
-            List<PointF> lowerPath = _paths[lowerIdx];
+            List<CurveVertex> lowerPath = _paths[lowerIdx];
 
             // 计算两条路径的包围盒
             float minX = float.MaxValue, minY = float.MaxValue;
             float maxX = float.MinValue, maxY = float.MinValue;
-            foreach (PointF pt in currentPath)
+            foreach (CurveVertex v in currentPath)
             {
+                PointF pt = v.Position;
                 if (pt.X < minX) minX = pt.X;
                 if (pt.Y < minY) minY = pt.Y;
                 if (pt.X > maxX) maxX = pt.X;
                 if (pt.Y > maxY) maxY = pt.Y;
             }
-            foreach (PointF pt in lowerPath)
+            foreach (CurveVertex v in lowerPath)
             {
+                PointF pt = v.Position;
                 if (pt.X < minX) minX = pt.X;
                 if (pt.Y < minY) minY = pt.Y;
                 if (pt.X > maxX) maxX = pt.X;
@@ -571,9 +584,9 @@ namespace DiagramDesigner.Controls
 
             // 使用 Region 计算布尔运算结果
             GraphicsPath upperGP = new GraphicsPath();
-            upperGP.AddPolygon(currentPath.ToArray());
+            upperGP.AddPolygon(ToPointArray(currentPath));
             GraphicsPath lowerGP = new GraphicsPath();
-            lowerGP.AddPolygon(lowerPath.ToArray());
+            lowerGP.AddPolygon(ToPointArray(lowerPath));
 
             Region resultRegion;
             switch (currentOp)
@@ -612,7 +625,7 @@ namespace DiagramDesigner.Controls
                 return;
 
             // 替换当前路径为合并结果，删除下方路径
-            _paths[_currentPathIndex] = mergedPath;
+            _paths[_currentPathIndex] = CurveVertex.FromPointList(mergedPath);
             _pathBoolOps[_currentPathIndex] = BooleanOperation.None;
             _paths.RemoveAt(lowerIdx);
             _pathBoolOps.RemoveAt(lowerIdx);
@@ -1230,7 +1243,7 @@ namespace DiagramDesigner.Controls
                 _chkFilled.Checked = true;
                 _chkCustomGeom.Checked = false;
                 _paths.Clear();
-                _paths.Add(new List<PointF>());
+                _paths.Add(new List<CurveVertex>());
                 _pathBoolOps.Clear();
                 _pathBoolOps.Add(BooleanOperation.None);
                 _currentPathIndex = 0;
@@ -1261,7 +1274,7 @@ namespace DiagramDesigner.Controls
             else
             {
                 _paths.Clear();
-                _paths.Add(new List<PointF>());
+                _paths.Add(new List<CurveVertex>());
                 _pathBoolOps.Clear();
                 _pathBoolOps.Add(BooleanOperation.None);
                 _currentPathIndex = 0;
@@ -1494,6 +1507,7 @@ namespace DiagramDesigner.Controls
             _btnClosePath.Visible = visible;
             _btnCopyDefault.Visible = visible;
             _btnClearGeom.Visible = visible;
+            _btnCircle.Visible = visible;
             _chkFilled.Visible = visible;
             _panelPathToolbar.Visible = visible;
             _lblDefaultHint.Visible = !visible;
@@ -1503,11 +1517,19 @@ namespace DiagramDesigner.Controls
 
         #region 编辑器 — 图形加载与构建
 
-        private List<PointF> CurrentPath()
+        private static PointF[] ToPointArray(List<CurveVertex> path)
+        {
+            PointF[] result = new PointF[path.Count];
+            for (int i = 0; i < path.Count; i++)
+                result[i] = path[i].Position;
+            return result;
+        }
+
+        private List<CurveVertex> CurrentPath()
         {
             if (_paths.Count == 0)
             {
-                _paths.Add(new List<PointF>());
+                _paths.Add(new List<CurveVertex>());
                 _pathBoolOps.Add(BooleanOperation.None);
             }
             if (_currentPathIndex < 0 || _currentPathIndex >= _paths.Count)
@@ -1531,7 +1553,7 @@ namespace DiagramDesigner.Controls
 
             if (cmds == null || cmds.Count == 0)
             {
-                _paths.Add(new List<PointF>());
+                _paths.Add(new List<CurveVertex>());
                 _pathBoolOps.Add(BooleanOperation.None);
                 RefreshPathCombo();
                 return;
@@ -1555,11 +1577,22 @@ namespace DiagramDesigner.Controls
             {
                 foreach (PathDef pd in compoundCmd.PathDefs)
                 {
-                    List<PointF> path = new List<PointF>();
+                    List<CurveVertex> path = new List<CurveVertex>();
                     if (pd.Points != null)
                     {
-                        foreach (PointF pt in pd.Points)
-                            path.Add(new PointF(offsetX + pt.X * canvasW, offsetY + pt.Y * canvasH));
+                        for (int i = 0; i < pd.Points.Length; i++)
+                        {
+                            PointF pt = pd.Points[i];
+                            CurveVertex v = new CurveVertex(new PointF(offsetX + pt.X * canvasW, offsetY + pt.Y * canvasH));
+                            // 加载句柄数据（归一化→像素）
+                            if (pd.HandleTypes != null && i < pd.HandleTypes.Length && pd.HandleTypes[i] != HandleType.None)
+                            {
+                                v.Handle = pd.HandleTypes[i];
+                                v.HandleIn = new PointF(pd.HandleIns[i].X * canvasW, pd.HandleIns[i].Y * canvasH);
+                                v.HandleOut = new PointF(pd.HandleOuts[i].X * canvasW, pd.HandleOuts[i].Y * canvasH);
+                            }
+                            path.Add(v);
+                        }
                     }
                     _paths.Add(path);
                     _pathBoolOps.Add(pd.BoolOp);
@@ -1578,7 +1611,7 @@ namespace DiagramDesigner.Controls
             {
                 foreach (PointF[] pts in compoundCmd.MultiPaths)
                 {
-                    List<PointF> path = new List<PointF>();
+                    List<CurveVertex> path = new List<CurveVertex>();
                     if (pts != null)
                     {
                         foreach (PointF pt in pts)
@@ -1606,9 +1639,20 @@ namespace DiagramDesigner.Controls
 
             if (polyCmd != null && polyCmd.PolygonPoints != null && polyCmd.PolygonPoints.Length >= 3)
             {
-                List<PointF> path = new List<PointF>();
-                foreach (PointF pt in polyCmd.PolygonPoints)
-                    path.Add(new PointF(offsetX + pt.X * canvasW, offsetY + pt.Y * canvasH));
+                List<CurveVertex> path = new List<CurveVertex>();
+                for (int i = 0; i < polyCmd.PolygonPoints.Length; i++)
+                {
+                    PointF pt = polyCmd.PolygonPoints[i];
+                    CurveVertex v = new CurveVertex(new PointF(offsetX + pt.X * canvasW, offsetY + pt.Y * canvasH));
+                    // 加载句柄数据（归一化→像素）
+                    if (polyCmd.PolyHandleTypes != null && i < polyCmd.PolyHandleTypes.Length && polyCmd.PolyHandleTypes[i] != HandleType.None)
+                    {
+                        v.Handle = polyCmd.PolyHandleTypes[i];
+                        v.HandleIn = new PointF(polyCmd.PolyHandleIns[i].X * canvasW, polyCmd.PolyHandleIns[i].Y * canvasH);
+                        v.HandleOut = new PointF(polyCmd.PolyHandleOuts[i].X * canvasW, polyCmd.PolyHandleOuts[i].Y * canvasH);
+                    }
+                    path.Add(v);
+                }
                 _paths.Add(path);
                 _pathBoolOps.Add(BooleanOperation.None);
                 _closedPath = true;
@@ -1618,7 +1662,7 @@ namespace DiagramDesigner.Controls
             }
             else
             {
-                _paths.Add(new List<PointF>());
+                _paths.Add(new List<CurveVertex>());
                 _pathBoolOps.Add(BooleanOperation.None);
             }
             RefreshPathCombo();
@@ -1630,7 +1674,7 @@ namespace DiagramDesigner.Controls
         /// </summary>
         private List<RenderCommand> BuildRenderCommandsFromVertices()
         {
-            List<List<PointF>> validPaths = new List<List<PointF>>();
+            List<List<CurveVertex>> validPaths = new List<List<CurveVertex>>();
             List<BooleanOperation> validOps = new List<BooleanOperation>();
             for (int i = 0; i < _paths.Count; i++)
             {
@@ -1646,10 +1690,11 @@ namespace DiagramDesigner.Controls
             // 全局包围盒归一化
             float minX = float.MaxValue, minY = float.MaxValue;
             float maxX = float.MinValue, maxY = float.MinValue;
-            foreach (List<PointF> path in validPaths)
+            foreach (List<CurveVertex> path in validPaths)
             {
-                foreach (PointF pt in path)
+                foreach (CurveVertex v in path)
                 {
+                    PointF pt = v.Position;
                     if (pt.X < minX) minX = pt.X;
                     if (pt.Y < minY) minY = pt.Y;
                     if (pt.X > maxX) maxX = pt.X;
@@ -1664,14 +1709,33 @@ namespace DiagramDesigner.Controls
             // 单路径：普通 Polygon
             if (validPaths.Count == 1)
             {
-                List<PointF> path = validPaths[0];
+                List<CurveVertex> path = validPaths[0];
                 PointF[] normalized = new PointF[path.Count];
                 for (int i = 0; i < path.Count; i++)
-                    normalized[i] = new PointF((path[i].X - minX) / rangeX, (path[i].Y - minY) / rangeY);
+                    normalized[i] = new PointF((path[i].Position.X - minX) / rangeX, (path[i].Position.Y - minY) / rangeY);
 
                 RenderCommand polyCmd = new RenderCommand();
                 polyCmd.CommandType = RenderCommandType.Polygon;
                 polyCmd.PolygonPoints = normalized;
+                // 提取句柄数据（贝塞尔曲线控制点，像素→归一化）
+                HandleType[] handleTypes = new HandleType[path.Count];
+                PointF[] handleIns = new PointF[path.Count];
+                PointF[] handleOuts = new PointF[path.Count];
+                bool hasHandles = false;
+                for (int i = 0; i < path.Count; i++)
+                {
+                    handleTypes[i] = path[i].Handle;
+                    handleIns[i] = new PointF(path[i].HandleIn.X / rangeX, path[i].HandleIn.Y / rangeY);
+                    handleOuts[i] = new PointF(path[i].HandleOut.X / rangeX, path[i].HandleOut.Y / rangeY);
+                    if (path[i].Handle != HandleType.None)
+                        hasHandles = true;
+                }
+                if (hasHandles)
+                {
+                    polyCmd.PolyHandleTypes = handleTypes;
+                    polyCmd.PolyHandleIns = handleIns;
+                    polyCmd.PolyHandleOuts = handleOuts;
+                }
                 polyCmd.X = 0; polyCmd.Y = 0;
                 polyCmd.Width = 1; polyCmd.Height = 1;
                 polyCmd.FillColor = _filled ? _geomFillColor : Color.Transparent;
@@ -1688,12 +1752,31 @@ namespace DiagramDesigner.Controls
             cmd.MultiPaths = new List<PointF[]>(); // 同时保存 MultiPaths 以兼容旧版
             for (int i = 0; i < validPaths.Count; i++)
             {
-                List<PointF> path = validPaths[i];
-                PointF[] normalized = new PointF[path.Count];
-                for (int j = 0; j < path.Count; j++)
-                    normalized[j] = new PointF((path[j].X - minX) / rangeX, (path[j].Y - minY) / rangeY);
+                List<CurveVertex> path = validPaths[i];
+                int n = path.Count;
+                PointF[] normalized = new PointF[n];
+                HandleType[] hTypes = new HandleType[n];
+                PointF[] hIns = new PointF[n];
+                PointF[] hOuts = new PointF[n];
+                bool hasH = false;
+                for (int j = 0; j < n; j++)
+                {
+                    normalized[j] = new PointF((path[j].Position.X - minX) / rangeX, (path[j].Position.Y - minY) / rangeY);
+                    hTypes[j] = path[j].Handle;
+                    hIns[j] = new PointF(path[j].HandleIn.X / rangeX, path[j].HandleIn.Y / rangeY);
+                    hOuts[j] = new PointF(path[j].HandleOut.X / rangeX, path[j].HandleOut.Y / rangeY);
+                    if (path[j].Handle != HandleType.None) hasH = true;
+                }
                 cmd.MultiPaths.Add(normalized);
-                cmd.PathDefs.Add(new PathDef(normalized, validOps[i]));
+                // 创建 PathDef 并手动设置归一化句柄数据
+                PathDef pd = new PathDef(normalized, validOps[i]);
+                if (hasH)
+                {
+                    pd.HandleTypes = hTypes;
+                    pd.HandleIns = hIns;
+                    pd.HandleOuts = hOuts;
+                }
+                cmd.PathDefs.Add(pd);
             }
             cmd.BoolOp = validOps.Count > 1 ? validOps[0] : BooleanOperation.None;  // 全局 BoolOp 用于旧版兼容（第一条路径的运算）
             cmd.X = 0; cmd.Y = 0;
@@ -1720,13 +1803,69 @@ namespace DiagramDesigner.Controls
         private void OnClearGeom(object sender, EventArgs e)
         {
             _paths.Clear();
-            _paths.Add(new List<PointF>());
+            _paths.Add(new List<CurveVertex>());
             _pathBoolOps.Clear();
             _pathBoolOps.Add(BooleanOperation.None);
             _currentPathIndex = 0;
             _selectedVertex = -1;
             _dragIndex = -1;
             _closedPath = false;
+            RefreshPathCombo();
+            _canvasPanel.Invalidate();
+        }
+
+        /// <summary>
+        /// 创建圆形：使用4个顶点+对称句柄的贝塞尔近似。
+        /// 4个顶点位于圆的上下左右四极点，每个顶点的句柄沿切线方向，
+        /// 长度为半径 * 0.5523（圆的贝塞尔近似常数）。
+        /// </summary>
+        private void OnCreateCircle(object sender, EventArgs e)
+        {
+            List<CurveVertex> verts = CurrentPath();
+            verts.Clear();
+
+            float canvasW = (float)_canvasPanel.Width;
+            float canvasH = (float)_canvasPanel.Height;
+            float cx = canvasW * 0.5f;
+            float cy = canvasH * 0.5f;
+            float radius = Math.Min(canvasW, canvasH) * 0.3f;
+
+            // 贝塞尔圆近似常数
+            float k = 0.5523f;
+            float handleLen = radius * k;
+
+            // 4个顶点：上、右、下、左（顺时针）
+            // 每个顶点使用 Symmetric 句柄，切线方向垂直于半径
+            CurveVertex top = new CurveVertex(new PointF(cx, cy - radius));
+            CurveVertex right = new CurveVertex(new PointF(cx + radius, cy));
+            CurveVertex bottom = new CurveVertex(new PointF(cx, cy + radius));
+            CurveVertex left = new CurveVertex(new PointF(cx - radius, cy));
+
+            // 设置对称句柄
+            top.Handle = HandleType.Symmetric;
+            top.HandleOut = new PointF(handleLen, 0);   // 切线向右
+            top.HandleIn = new PointF(-handleLen, 0);    // 镜像
+
+            right.Handle = HandleType.Symmetric;
+            right.HandleOut = new PointF(0, handleLen);  // 切线向下
+            right.HandleIn = new PointF(0, -handleLen);
+
+            bottom.Handle = HandleType.Symmetric;
+            bottom.HandleOut = new PointF(-handleLen, 0); // 切线向左
+            bottom.HandleIn = new PointF(handleLen, 0);
+
+            left.Handle = HandleType.Symmetric;
+            left.HandleOut = new PointF(0, -handleLen);  // 切线向上
+            left.HandleIn = new PointF(0, handleLen);
+
+            verts.Add(top);
+            verts.Add(right);
+            verts.Add(bottom);
+            verts.Add(left);
+
+            _closedPath = true;
+            _selectedVertex = -1;
+            _dragIndex = -1;
             RefreshPathCombo();
             _canvasPanel.Invalidate();
         }
@@ -1753,42 +1892,83 @@ namespace DiagramDesigner.Controls
             {
                 for (int p = 0; p < _paths.Count; p++)
                 {
-                    List<PointF> verts = _paths[p];
+                    List<CurveVertex> verts = _paths[p];
                     if (verts == null || verts.Count == 0)
                         continue;
 
                     bool isCurrent = (p == _currentPathIndex && _selectedZoneIndex < 0);
 
+                    // 检测是否有曲线句柄
+                    bool hasCurves = false;
+                    foreach (CurveVertex v in verts)
+                        if (v.Handle != HandleType.None) { hasCurves = true; break; }
+
+                    // 填充
                     if (_filled && verts.Count >= 3)
                     {
-                        GraphicsPath gp = new GraphicsPath();
-                        for (int i = 0; i < verts.Count; i++)
-                            gp.AddLine(verts[i], verts[(i + 1) % verts.Count]);
-                        if (_closedPath) gp.CloseFigure();
+                        GraphicsPath gp = BuildEditorPath(verts, _closedPath, hasCurves);
                         int alpha = isCurrent ? 180 : 70;
                         using (Brush brush = new SolidBrush(Color.FromArgb(alpha, _geomFillColor)))
                             g.FillPath(brush, gp);
                         gp.Dispose();
                     }
 
+                    // 描边
                     Color borderColor = isCurrent ? _geomBorderColor : Color.FromArgb(160, _geomBorderColor);
                     float penWidth = isCurrent ? 2f : 1f;
                     using (Pen pen = new Pen(borderColor, penWidth))
                     {
-                        for (int i = 0; i < verts.Count - 1; i++)
-                            g.DrawLine(pen, verts[i], verts[i + 1]);
-                        if (_closedPath && verts.Count >= 3)
-                            g.DrawLine(pen, verts[verts.Count - 1], verts[0]);
+                        if (hasCurves)
+                        {
+                            using (GraphicsPath gp = BuildEditorPath(verts, _closedPath, true))
+                                g.DrawPath(pen, gp);
+                        }
+                        else
+                        {
+                            for (int i = 0; i < verts.Count - 1; i++)
+                                g.DrawLine(pen, verts[i].Position, verts[i + 1].Position);
+                            if (_closedPath && verts.Count >= 3)
+                                g.DrawLine(pen, verts[verts.Count - 1].Position, verts[0].Position);
+                        }
                     }
 
+                    // 绘制顶点手柄 + 控制柄
                     if (isCurrent)
                     {
                         for (int i = 0; i < verts.Count; i++)
                         {
-                            RectangleF handle = new RectangleF(verts[i].X - 5, verts[i].Y - 5, 10, 10);
+                            CurveVertex v = verts[i];
+
+                            // 绘制控制柄连线 + 控制点圆
+                            if (v.Handle != HandleType.None)
+                            {
+                                PointF vPos = v.Position;
+                                PointF hOutAbs = v.GetHandleOutAbs();
+                                PointF hInAbs = v.GetHandleInAbs();
+
+                                // 连接线（细虚线）
+                                using (Pen hPen = new Pen(Color.FromArgb(100, 100, 100), 1f))
+                                {
+                                    hPen.DashStyle = DashStyle.Dot;
+                                    g.DrawLine(hPen, vPos, hOutAbs);
+                                    if (v.Handle == HandleType.Asymmetric)
+                                        g.DrawLine(hPen, vPos, hInAbs);
+                                }
+
+                                // 控制点圆
+                                DrawHandlePoint(g, hOutAbs, Color.FromArgb(255, 128, 0), i == _selectedVertex);
+                                if (v.Handle == HandleType.Asymmetric)
+                                    DrawHandlePoint(g, hInAbs, Color.FromArgb(0, 128, 255), i == _selectedVertex);
+                            }
+
+                            // 顶点方块
+                            RectangleF handle = new RectangleF(v.Position.X - 5, v.Position.Y - 5, 10, 10);
                             bool isSelected = (i == _selectedVertex);
+                            Color vColor = v.Handle == HandleType.None ? _geomBorderColor
+                                : v.Handle == HandleType.Symmetric ? Color.FromArgb(0, 160, 0)
+                                : Color.FromArgb(160, 0, 160);
                             using (Brush brush = new SolidBrush(isSelected ? Color.FromArgb(0, 120, 215) : Color.White))
-                            using (Pen pen = new Pen(_geomBorderColor, isSelected ? 2f : 1f))
+                            using (Pen pen = new Pen(vColor, isSelected ? 2f : 1f))
                             {
                                 g.FillRectangle(brush, handle);
                                 g.DrawRectangle(pen, handle.X, handle.Y, handle.Width, handle.Height);
@@ -1855,7 +2035,7 @@ namespace DiagramDesigner.Controls
                 if (_selectedZoneIndex >= 0 && _selectedZoneIndex < _zones.Count)
                 {
                     ShapeZone z = _zones[_selectedZoneIndex];
-                    info = string.Format("区域: {0}  锚定: {1}  (拖拽边角调整宽高)", z.Name, z.Anchor);
+                    info = string.Format("区域: {0}  锚定: {1}  (拖拽边角调整宽高, 约束在图形内)", z.Name, z.Anchor);
                 }
                 else
                 {
@@ -1863,7 +2043,17 @@ namespace DiagramDesigner.Controls
                         ? _pathBoolOps[_currentPathIndex] : BooleanOperation.None;
                     bool isLastPath = (_currentPathIndex >= _paths.Count - 1);
                     string boolInfo = isLastPath ? "无（最底层）" : currentOp.ToString();
-                    info = string.Format("路径 {0}/{1}   布尔(→下层): {2}", _currentPathIndex + 1, _paths.Count, boolInfo);
+                    string handleHint = "";
+                    if (_selectedVertex >= 0 && _selectedVertex < CurrentPath().Count)
+                    {
+                        HandleType ht = CurrentPath()[_selectedVertex].Handle;
+                        handleHint = "   句柄: " + (ht == HandleType.None ? "无(右键切换)" : ht == HandleType.Symmetric ? "对称(右键切换)" : "独立(右键切换)");
+                    }
+                    else
+                    {
+                        handleHint = "   (右键顶点切换句柄: 无/对称/独立)";
+                    }
+                    info = string.Format("路径 {0}/{1}   布尔(→下层): {2}{3}", _currentPathIndex + 1, _paths.Count, boolInfo, handleHint);
                 }
                 g.DrawString(info, font, brush, 6, 4);
             }
@@ -1920,6 +2110,38 @@ namespace DiagramDesigner.Controls
 
         private void OnCanvasMouseDown(object sender, MouseEventArgs e)
         {
+            // 右键顶点：切换句柄状态 None → Symmetric → Asymmetric → None
+            if (e.Button == MouseButtons.Right)
+            {
+                int hitIdx = HitTestVertex(e.Location);
+                if (hitIdx >= 0)
+                {
+                    List<CurveVertex> verts = CurrentPath();
+                    CurveVertex v = verts[hitIdx];
+                    _selectedVertex = hitIdx;
+
+                    // 循环切换句柄类型
+                    switch (v.Handle)
+                    {
+                        case HandleType.None:
+                            v.Handle = HandleType.Symmetric;
+                            // 初始化默认句柄方向
+                            InitVertexHandles(verts, hitIdx);
+                            break;
+                        case HandleType.Symmetric:
+                            v.Handle = HandleType.Asymmetric;
+                            break;
+                        case HandleType.Asymmetric:
+                            v.Handle = HandleType.None;
+                            v.HandleIn = PointF.Empty;
+                            v.HandleOut = PointF.Empty;
+                            break;
+                    }
+                    _canvasPanel.Invalidate();
+                }
+                return;
+            }
+
             if (e.Button == MouseButtons.Left)
             {
                 float canvasW = (float)_canvasPanel.Width;
@@ -1960,8 +2182,20 @@ namespace DiagramDesigner.Controls
                     _canvasPanel.Invalidate();
                 }
 
+                // 优先检查贝塞尔控制柄
+                int[] handleHit = HitTestHandle(e.Location);
+                if (handleHit != null)
+                {
+                    _dragHandleVertex = handleHit[0];
+                    _dragHandleType = handleHit[1];
+                    _selectedVertex = handleHit[0];
+                    _canvasPanel.Cursor = Cursors.SizeAll;
+                    _canvasPanel.Invalidate();
+                    return;
+                }
+
                 // 路径顶点操作
-                List<PointF> verts = CurrentPath();
+                List<CurveVertex> verts = CurrentPath();
                 int hitIdx = HitTestVertex(e.Location);
                 if (hitIdx >= 0)
                 {
@@ -1984,7 +2218,7 @@ namespace DiagramDesigner.Controls
             float canvasW = (float)_canvasPanel.Width;
             float canvasH = (float)_canvasPanel.Height;
 
-            // Zone 拖拽调整大小
+            // Zone 拖拽调整大小（约束在图形多边形内）
             if (_zoneDragMode == 2 && _selectedZoneIndex >= 0 && _selectedZoneIndex < _zones.Count)
             {
                 ShapeZone zone = _zones[_selectedZoneIndex];
@@ -1992,6 +2226,10 @@ namespace DiagramDesigner.Controls
                 float dy = e.Y - _zoneDragStart.Y;
                 float shapeW = canvasW - 40;
                 float shapeH = canvasH - 40;
+
+                // 保存原始值用于约束回退
+                float origX = zone.X, origY = zone.Y;
+                float origW = zone.Width, origH = zone.Height;
 
                 // 根据手柄索引调整宽高
                 switch (_zoneDragHandle)
@@ -2029,12 +2267,32 @@ namespace DiagramDesigner.Controls
                     if (zone.Y < 0f) zone.Y = 0f;
                 }
 
+                // 约束在图形多边形内
+                RectangleF shapeBounds = new RectangleF(20, 20, canvasW - 40, canvasH - 40);
+                RectangleF zr = zone.GetAnchoredBounds(shapeBounds, canvasW - 40, canvasH - 40);
+                GraphicsPath shapePath = GetShapePolygonPath();
+                if (shapePath != null)
+                {
+                    PointF[] corners = GetZoneCorners(zr);
+                    bool allInside = true;
+                    foreach (PointF c in corners)
+                    {
+                        if (!shapePath.IsVisible(c)) { allInside = false; break; }
+                    }
+                    if (!allInside)
+                    {
+                        zone.X = origX; zone.Y = origY;
+                        zone.Width = origW; zone.Height = origH;
+                    }
+                    shapePath.Dispose();
+                }
+
                 _zoneDragStart = e.Location;
                 _canvasPanel.Invalidate();
                 return;
             }
 
-            // Zone 移动
+            // Zone 移动（约束在图形多边形内）
             if (_zoneDragMode == 1 && _selectedZoneIndex >= 0 && _selectedZoneIndex < _zones.Count)
             {
                 ShapeZone zone = _zones[_selectedZoneIndex];
@@ -2042,9 +2300,34 @@ namespace DiagramDesigner.Controls
                 float dy = e.Y - _zoneDragStart.Y;
                 float shapeW = canvasW - 40;
                 float shapeH = canvasH - 40;
+                
+                // 保存原始位置，用于约束回退
+                float origX = zone.X;
+                float origY = zone.Y;
+                
                 zone.X += dx / shapeW;
                 zone.Y += dy / shapeH;
+                
+                // 约束在图形边界内
+                ConstrainZoneToShape(zone, canvasW, canvasH, origX, origY);
+                
                 _zoneDragStart = e.Location;
+                _canvasPanel.Invalidate();
+                return;
+            }
+
+            // 贝塞尔控制柄拖拽
+            if (_dragHandleType > 0 && _dragHandleVertex >= 0)
+            {
+                List<CurveVertex> verts = CurrentPath();
+                if (_dragHandleVertex < verts.Count)
+                {
+                    CurveVertex v = verts[_dragHandleVertex];
+                    if (_dragHandleType == 1) // HandleOut
+                        v.SetHandleOutAbs(new PointF(e.X, e.Y));
+                    else // HandleIn
+                        v.SetHandleInAbs(new PointF(e.X, e.Y));
+                }
                 _canvasPanel.Invalidate();
                 return;
             }
@@ -2052,9 +2335,9 @@ namespace DiagramDesigner.Controls
             // 路径顶点拖拽
             if (_dragIndex >= 0)
             {
-                List<PointF> verts = CurrentPath();
+                List<CurveVertex> verts = CurrentPath();
                 if (_dragIndex < verts.Count)
-                    verts[_dragIndex] = new PointF(e.X, e.Y);
+                    verts[_dragIndex].Position = new PointF(e.X, e.Y);
                 _canvasPanel.Invalidate();
             }
             else
@@ -2072,6 +2355,13 @@ namespace DiagramDesigner.Controls
                 }
                 int zoneHit = HitTestZone(e.Location);
                 if (zoneHit >= 0)
+                {
+                    _canvasPanel.Cursor = Cursors.SizeAll;
+                    return;
+                }
+                // 检查是否悬停在控制柄上
+                int[] hHit = HitTestHandle(e.Location);
+                if (hHit != null)
                 {
                     _canvasPanel.Cursor = Cursors.SizeAll;
                     return;
@@ -2094,6 +2384,12 @@ namespace DiagramDesigner.Controls
                 _dragIndex = -1;
                 _canvasPanel.Cursor = Cursors.Default;
             }
+            if (_dragHandleType != 0)
+            {
+                _dragHandleType = 0;
+                _dragHandleVertex = -1;
+                _canvasPanel.Cursor = Cursors.Default;
+            }
         }
 
         private void OnCanvasDoubleClick(object sender, EventArgs e)
@@ -2114,7 +2410,7 @@ namespace DiagramDesigner.Controls
             int hitIdx = HitTestVertex(me.Location);
             if (hitIdx >= 0)
             {
-                List<PointF> verts = CurrentPath();
+                List<CurveVertex> verts = CurrentPath();
                 verts.RemoveAt(hitIdx);
                 if (_selectedVertex >= verts.Count)
                     _selectedVertex = verts.Count - 1;
@@ -2125,24 +2421,187 @@ namespace DiagramDesigner.Controls
 
         private int HitTestVertex(Point pt)
         {
-            List<PointF> verts = CurrentPath();
+            List<CurveVertex> verts = CurrentPath();
             for (int i = 0; i < verts.Count; i++)
             {
-                float dx = verts[i].X - pt.X;
-                float dy = verts[i].Y - pt.Y;
+                float dx = verts[i].Position.X - pt.X;
+                float dy = verts[i].Position.Y - pt.Y;
                 if (dx * dx + dy * dy <= 64)
                     return i;
             }
             return -1;
         }
 
+        /// <summary>
+        /// 命中测试贝塞尔控制柄。
+        /// 返回: null=未命中, 否则 [vertexIndex, handleType] (1=HandleOut, 2=HandleIn)
+        /// </summary>
+        private int[] HitTestHandle(Point pt)
+        {
+            List<CurveVertex> verts = CurrentPath();
+            for (int i = 0; i < verts.Count; i++)
+            {
+                CurveVertex v = verts[i];
+                if (v.Handle == HandleType.None) continue;
+
+                // 测试 HandleOut
+                PointF hOut = v.GetHandleOutAbs();
+                float dx = hOut.X - pt.X;
+                float dy = hOut.Y - pt.Y;
+                if (dx * dx + dy * dy <= 81) // 9px radius
+                    return new int[] { i, 1 };
+
+                // Asymmetric 模式下测试 HandleIn
+                if (v.Handle == HandleType.Asymmetric)
+                {
+                    PointF hIn = v.GetHandleInAbs();
+                    dx = hIn.X - pt.X;
+                    dy = hIn.Y - pt.Y;
+                    if (dx * dx + dy * dy <= 81)
+                        return new int[] { i, 2 };
+                }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// 构建编辑器预览路径（像素坐标，含贝塞尔曲线）。
+        /// </summary>
+        private GraphicsPath BuildEditorPath(List<CurveVertex> verts, bool closed, bool useCurves)
+        {
+            GraphicsPath gp = new GraphicsPath();
+            int n = verts.Count;
+            if (n < 2) return gp;
+
+            if (!useCurves)
+            {
+                for (int i = 0; i < n - 1; i++)
+                    gp.AddLine(verts[i].Position, verts[i + 1].Position);
+                if (closed && n >= 3)
+                    gp.AddLine(verts[n - 1].Position, verts[0].Position);
+                if (closed) gp.CloseFigure();
+                return gp;
+            }
+
+            int edgeCount = closed ? n : n - 1;
+            for (int i = 0; i < edgeCount; i++)
+            {
+                int next = (i + 1) % n;
+                PointF p1 = verts[i].Position;
+                PointF p2 = verts[next].Position;
+
+                bool hasOut = verts[i].Handle != HandleType.None;
+                bool hasIn = verts[next].Handle != HandleType.None;
+
+                if (!hasOut && !hasIn)
+                {
+                    gp.AddLine(p1, p2);
+                }
+                else
+                {
+                    PointF cp1 = hasOut ? verts[i].GetHandleOutAbs() : p1;
+                    PointF cp2 = hasIn ? verts[next].GetHandleInAbs() : p2;
+                    gp.AddBezier(p1, cp1, cp2, p2);
+                }
+            }
+            if (closed) gp.CloseFigure();
+            return gp;
+        }
+
+        /// <summary>绘制控制柄圆点</summary>
+        private void DrawHandlePoint(Graphics g, PointF pos, Color color, bool isSelected)
+        {
+            float r = isSelected ? 6f : 5f;
+            RectangleF rect = new RectangleF(pos.X - r, pos.Y - r, r * 2, r * 2);
+            using (Brush brush = new SolidBrush(Color.White))
+            using (Pen pen = new Pen(color, isSelected ? 2f : 1.5f))
+            {
+                g.FillEllipse(brush, rect);
+                g.DrawEllipse(pen, rect);
+            }
+        }
+
+        /// <summary>
+        /// 为指定顶点初始化默认句柄方向（角平分线法）。
+        /// 使用相邻顶点计算进出边方向。
+        /// </summary>
+        private void InitVertexHandles(List<CurveVertex> verts, int idx)
+        {
+            int n = verts.Count;
+            if (n < 2) return;
+            int prev = (idx - 1 + n) % n;
+            int next = (idx + 1) % n;
+            if (!_closedPath && idx == 0) prev = idx;
+            if (!_closedPath && idx == n - 1) next = idx;
+            verts[idx].InitDefaultHandles(verts[prev].Position, verts[next].Position);
+        }
+
+        /// <summary>
+        /// 约束 Zone 在图形多边形边界内。
+        /// 检查 Zone 四角是否在多边形内，若超出则回退到原始位置。
+        /// </summary>
+        private void ConstrainZoneToShape(ShapeZone zone, float canvasW, float canvasH, float origX, float origY)
+        {
+            RectangleF shapeBounds = new RectangleF(20, 20, canvasW - 40, canvasH - 40);
+            RectangleF zr = zone.GetAnchoredBounds(shapeBounds, canvasW - 40, canvasH - 40);
+
+            // 构建图形多边形（使用第一条有效路径的像素坐标）
+            GraphicsPath shapePath = GetShapePolygonPath();
+            if (shapePath == null) return;
+
+            // 检查 Zone 四角是否在多边形内
+            PointF[] corners = GetZoneCorners(zr);
+            bool allInside = true;
+            foreach (PointF c in corners)
+            {
+                if (!shapePath.IsVisible(c))
+                {
+                    allInside = false;
+                    break;
+                }
+            }
+
+            if (!allInside)
+            {
+                // 回退到原始位置
+                zone.X = origX;
+                zone.Y = origY;
+            }
+            shapePath.Dispose();
+        }
+
+        /// <summary>获取当前图形的多边形路径（像素坐标），用于 Zone 约束检测</summary>
+        private GraphicsPath GetShapePolygonPath()
+        {
+            // 收集所有有效路径
+            List<List<CurveVertex>> validPaths = new List<List<CurveVertex>>();
+            foreach (List<CurveVertex> path in _paths)
+            {
+                if (path != null && path.Count >= 3)
+                    validPaths.Add(path);
+            }
+            if (validPaths.Count == 0) return null;
+
+            GraphicsPath result = new GraphicsPath();
+            foreach (List<CurveVertex> path in validPaths)
+            {
+                bool hasCurves = false;
+                foreach (CurveVertex v in path)
+                    if (v.Handle != HandleType.None) { hasCurves = true; break; }
+
+                GraphicsPath gp = BuildEditorPath(path, true, hasCurves);
+                result.AddPath(gp, false);
+            }
+            return result;
+        }
+
         private void OnAddVertex(object sender, EventArgs e)
         {
-            List<PointF> verts = CurrentPath();
+            List<CurveVertex> verts = CurrentPath();
             PointF newPt;
             if (verts.Count > 0)
             {
-                PointF last = verts[verts.Count - 1];
+                PointF last = verts[verts.Count - 1].Position;
                 newPt = new PointF(last.X + 30, last.Y + 30);
             }
             else
@@ -2157,7 +2616,7 @@ namespace DiagramDesigner.Controls
 
         private void OnDeleteVertex(object sender, EventArgs e)
         {
-            List<PointF> verts = CurrentPath();
+            List<CurveVertex> verts = CurrentPath();
             if (_selectedVertex >= 0 && _selectedVertex < verts.Count)
             {
                 verts.RemoveAt(_selectedVertex);
@@ -2183,7 +2642,7 @@ namespace DiagramDesigner.Controls
             // 新路径插入到当前路径上方（当前索引处），当前路径下移
             int insertAt = (_currentPathIndex >= 0 && _currentPathIndex < _paths.Count)
                 ? _currentPathIndex : _paths.Count;
-            _paths.Insert(insertAt, new List<PointF>());
+            _paths.Insert(insertAt, new List<CurveVertex>());
             _pathBoolOps.Insert(insertAt, BooleanOperation.None);
             _currentPathIndex = insertAt;
             _selectedVertex = -1;
@@ -2220,7 +2679,7 @@ namespace DiagramDesigner.Controls
             if (_currentPathIndex <= 0 || _currentPathIndex >= _paths.Count)
                 return;
             // 交换路径和布尔运算
-            List<PointF> tmpPath = _paths[_currentPathIndex];
+            List<CurveVertex> tmpPath = _paths[_currentPathIndex];
             _paths[_currentPathIndex] = _paths[_currentPathIndex - 1];
             _paths[_currentPathIndex - 1] = tmpPath;
 
@@ -2238,7 +2697,7 @@ namespace DiagramDesigner.Controls
         {
             if (_currentPathIndex < 0 || _currentPathIndex >= _paths.Count - 1)
                 return;
-            List<PointF> tmpPath = _paths[_currentPathIndex];
+            List<CurveVertex> tmpPath = _paths[_currentPathIndex];
             _paths[_currentPathIndex] = _paths[_currentPathIndex + 1];
             _paths[_currentPathIndex + 1] = tmpPath;
 
@@ -2360,7 +2819,7 @@ namespace DiagramDesigner.Controls
         private int CountValidPaths()
         {
             int count = 0;
-            foreach (List<PointF> path in _paths)
+            foreach (List<CurveVertex> path in _paths)
             {
                 if (path != null && path.Count >= 3)
                     count++;

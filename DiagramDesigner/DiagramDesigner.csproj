@@ -41,6 +41,7 @@
     <Compile Include="Core\ShapeMemberParameter.cs" />
     <Compile Include="Core\ShapeState.cs" />
     <Compile Include="Core\PathDef.cs" />
+    <Compile Include="Core\CurveVertex.cs" />
     <Compile Include="Core\ShapeZone.cs" />
     <Compile Include="Core\ShapeType.cs" />
     <Compile Include="Core\ShapeTypeRegistry.cs" />

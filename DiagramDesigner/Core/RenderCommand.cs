@@ -56,6 +56,11 @@ namespace DiagramDesigner.Core
         private bool _fill = true;
         private bool _stroke = true;
 
+        // === 曲线句柄数据（Polygon 类型，与 _polygonPoints 等长）===
+        private HandleType[] _polyHandleTypes = null;
+        private PointF[] _polyHandleIns = null;
+        private PointF[] _polyHandleOuts = null;
+
         // === 多路径与布尔运算 ===
         private List<PointF[]> _multiPaths = null;
         private BooleanOperation _boolOp = BooleanOperation.None;
@@ -193,6 +198,39 @@ namespace DiagramDesigner.Core
             set { _pathDefs = value; }
         }
 
+        /// <summary>Polygon 类型的顶点句柄类型数组（null 表示无曲线）</summary>
+        public HandleType[] PolyHandleTypes
+        {
+            get { return _polyHandleTypes; }
+            set { _polyHandleTypes = value; }
+        }
+
+        /// <summary>Polygon 类型的进边控制点偏移数组（归一化坐标）</summary>
+        public PointF[] PolyHandleIns
+        {
+            get { return _polyHandleIns; }
+            set { _polyHandleIns = value; }
+        }
+
+        /// <summary>Polygon 类型的出边控制点偏移数组（归一化坐标）</summary>
+        public PointF[] PolyHandleOuts
+        {
+            get { return _polyHandleOuts; }
+            set { _polyHandleOuts = value; }
+        }
+
+        /// <summary>Polygon 是否有曲线句柄</summary>
+        public bool PolygonHasCurves
+        {
+            get
+            {
+                if (_polyHandleTypes == null) return false;
+                foreach (HandleType ht in _polyHandleTypes)
+                    if (ht != HandleType.None) return true;
+                return false;
+            }
+        }
+
         public void Execute(Graphics g, RectangleF bounds, ShapeColors colors, float scale)
         {
             float absX = bounds.X + _x * bounds.Width;
@@ -293,6 +331,27 @@ namespace DiagramDesigner.Core
             if (_polygonPoints == null || _polygonPoints.Length < 3)
                 return;
 
+            // 有曲线句柄时使用 Bezier 路径渲染
+            if (PolygonHasCurves)
+            {
+                using (GraphicsPath gp = BuildCurveGraphicsPath(_polygonPoints, rect,
+                    _polyHandleTypes, _polyHandleIns, _polyHandleOuts, true))
+                {
+                    if (_fill)
+                    {
+                        using (Brush brush = CreateFillBrush(rect, colors))
+                            g.FillPath(brush, gp);
+                    }
+                    if (_stroke)
+                    {
+                        using (Pen pen = new Pen(stroke, _strokeWidth / scale))
+                            g.DrawPath(pen, gp);
+                    }
+                }
+                return;
+            }
+
+            // 无曲线：快速路径
             PointF[] pts = new PointF[_polygonPoints.Length];
             for (int i = 0; i < _polygonPoints.Length; i++)
             {
@@ -311,6 +370,54 @@ namespace DiagramDesigner.Core
                 using (Pen pen = new Pen(stroke, _strokeWidth / scale))
                     g.DrawPolygon(pen, pts);
             }
+        }
+
+        /// <summary>
+        /// 从归一化顶点和句柄数据构建含贝塞尔曲线的 GraphicsPath。
+        /// 每条边：若两端均无句柄则用直线，否则用三次贝塞尔曲线。
+        /// </summary>
+        public static GraphicsPath BuildCurveGraphicsPath(PointF[] normPoints, RectangleF rect,
+            HandleType[] handleTypes, PointF[] handleIns, PointF[] handleOuts, bool closed)
+        {
+            GraphicsPath gp = new GraphicsPath();
+            int n = normPoints.Length;
+            if (n < 2) return gp;
+
+            // 计算绝对坐标顶点
+            PointF[] absPts = new PointF[n];
+            for (int i = 0; i < n; i++)
+                absPts[i] = new PointF(
+                    rect.X + normPoints[i].X * rect.Width,
+                    rect.Y + normPoints[i].Y * rect.Height);
+
+            int edgeCount = closed ? n : n - 1;
+            for (int i = 0; i < edgeCount; i++)
+            {
+                int next = (i + 1) % n;
+                PointF p1 = absPts[i];
+                PointF p2 = absPts[next];
+
+                bool hasOut = handleTypes != null && i < handleTypes.Length && handleTypes[i] != HandleType.None;
+                bool hasIn = handleTypes != null && next < handleTypes.Length && handleTypes[next] != HandleType.None;
+
+                if (!hasOut && !hasIn)
+                {
+                    gp.AddLine(p1, p2);
+                }
+                else
+                {
+                    // 三次贝塞尔：cp1 从 p1 的 HandleOut，cp2 从 p2 的 HandleIn
+                    PointF cp1 = hasOut
+                        ? new PointF(p1.X + handleOuts[i].X * rect.Width, p1.Y + handleOuts[i].Y * rect.Height)
+                        : p1;
+                    PointF cp2 = hasIn
+                        ? new PointF(p2.X + handleIns[next].X * rect.Width, p2.Y + handleIns[next].Y * rect.Height)
+                        : p2;
+                    gp.AddBezier(p1, cp1, cp2, p2);
+                }
+            }
+            if (closed) gp.CloseFigure();
+            return gp;
         }
 
         /// <summary>
@@ -336,15 +443,25 @@ namespace DiagramDesigner.Core
                     absPaths.Add(null); // 占位，保持索引对齐
                     continue;
                 }
-                PointF[] pts = new PointF[def.Points.Length];
-                for (int i = 0; i < def.Points.Length; i++)
+                // 有曲线句柄时用 Bezier 路径，否则用多边形
+                GraphicsPath gp;
+                if (def.HasCurves)
                 {
-                    pts[i] = new PointF(
-                        rect.X + def.Points[i].X * rect.Width,
-                        rect.Y + def.Points[i].Y * rect.Height);
+                    gp = BuildCurveGraphicsPath(def.Points, rect,
+                        def.HandleTypes, def.HandleIns, def.HandleOuts, true);
                 }
-                GraphicsPath gp = new GraphicsPath();
-                gp.AddPolygon(pts);
+                else
+                {
+                    PointF[] pts = new PointF[def.Points.Length];
+                    for (int i = 0; i < def.Points.Length; i++)
+                    {
+                        pts[i] = new PointF(
+                            rect.X + def.Points[i].X * rect.Width,
+                            rect.Y + def.Points[i].Y * rect.Height);
+                    }
+                    gp = new GraphicsPath();
+                    gp.AddPolygon(pts);
+                }
                 absPaths.Add(gp);
             }
 
@@ -572,6 +689,12 @@ namespace DiagramDesigner.Core
                 c._polygonPoints = new PointF[_polygonPoints.Length];
                 for (int i = 0; i < _polygonPoints.Length; i++)
                     c._polygonPoints[i] = _polygonPoints[i];
+            }
+            if (_polyHandleTypes != null)
+            {
+                c._polyHandleTypes = (HandleType[])_polyHandleTypes.Clone();
+                c._polyHandleIns = (PointF[])_polyHandleIns.Clone();
+                c._polyHandleOuts = (PointF[])_polyHandleOuts.Clone();
             }
             c._useShapeColors = _useShapeColors;
             c._fill = _fill;
