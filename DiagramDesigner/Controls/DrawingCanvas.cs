@@ -44,6 +44,7 @@ namespace DiagramDesigner.Controls
         private TextBox _inlineEditBox;
         private GenericShape _inlineEditingShape;
         private int _inlineEditingMemberIndex = -1;
+        private bool _isEndingInlineEdit = false;  // 重入保护
         private ShapeZone _connectionStartZone;
 
         public DrawingCanvas()
@@ -238,10 +239,26 @@ namespace DiagramDesigner.Controls
                     }
                 }
 
-                if (!shape.Selected && (Control.ModifierKeys & Keys.Control) != Keys.Control)
-                    _document.ClearSelection();
+                bool ctrlKey = (Control.ModifierKeys & Keys.Control) == Keys.Control;
+                if (ctrlKey)
+                {
+                    // Ctrl+点击：反选（切换选中状态）
+                    shape.Selected = !shape.Selected;
+                }
+                else
+                {
+                    if (!shape.Selected)
+                        _document.ClearSelection();
+                    shape.Selected = true;
+                }
 
-                shape.Selected = true;
+                // 如果反选后该图形被取消选中，直接刷新并返回
+                if (ctrlKey && !shape.Selected)
+                {
+                    OnSelectionChanged();
+                    Invalidate();
+                    return;
+                }
 
                 ResizeHandle handle = shape.HitTestResizeHandle(worldPos, 8f / _zoom);
                 if (handle != ResizeHandle.None)
@@ -280,7 +297,9 @@ namespace DiagramDesigner.Controls
             }
             else
             {
-                _document.ClearSelection();
+                // Ctrl+空白：保留已有选中，开始框选（反选模式）
+                if ((Control.ModifierKeys & Keys.Control) != Keys.Control)
+                    _document.ClearSelection();
                 _isSelecting = true;
                 _dragStart = worldPos;
                 _selectionRect = new RectangleF(worldPos.X, worldPos.Y, 0, 0);
@@ -602,9 +621,15 @@ namespace DiagramDesigner.Controls
             if (_isSelecting)
             {
                 _isSelecting = false;
+                bool ctrlKey = (Control.ModifierKeys & Keys.Control) == Keys.Control;
                 List<ShapeBase> shapes = _document.GetShapesInRect(_selectionRect);
                 foreach (ShapeBase s in shapes)
-                    s.Selected = true;
+                {
+                    if (ctrlKey)
+                        s.Selected = !s.Selected;  // Ctrl 框选：反选
+                    else
+                        s.Selected = true;
+                }
                 if (shapes.Count > 0)
                     OnSelectionChanged();
                 Invalidate();
@@ -732,36 +757,46 @@ namespace DiagramDesigner.Controls
         /// <summary>结束内联编辑：将 TextBox 内容写回图形并移除控件</summary>
         public void EndInlineEdit()
         {
+            if (_isEndingInlineEdit)
+                return;
             if (_inlineEditBox == null)
                 return;
 
-            string text = _inlineEditBox.Text.Trim();
-
-            if (_inlineEditingMemberIndex >= 0 && _inlineEditingShape != null)
+            _isEndingInlineEdit = true;
+            try
             {
-                // 更新成员名称（从签名中提取或直接使用）
-                if (_inlineEditingMemberIndex < _inlineEditingShape.Members.Count)
+                string text = _inlineEditBox.Text.Trim();
+
+                if (_inlineEditingMemberIndex >= 0 && _inlineEditingShape != null)
                 {
-                    _inlineEditingShape.Members[_inlineEditingMemberIndex].Name = text;
+                    // 更新成员名称（从签名中提取或直接使用）
+                    if (_inlineEditingMemberIndex < _inlineEditingShape.Members.Count)
+                    {
+                        _inlineEditingShape.Members[_inlineEditingMemberIndex].Name = text;
+                    }
                 }
+                else if (_inlineEditingShape != null)
+                {
+                    // 更新标题
+                    if (!string.IsNullOrEmpty(text))
+                    {
+                        _inlineEditingShape.Name = text;
+                    }
+                }
+
+                this.Controls.Remove(_inlineEditBox);
+                _inlineEditBox.Dispose();
+                _inlineEditBox = null;
+                _inlineEditingShape = null;
+                _inlineEditingMemberIndex = -1;
+
+                OnDocumentModified();
+                Invalidate();
             }
-            else if (_inlineEditingShape != null)
+            finally
             {
-                // 更新标题
-                if (!string.IsNullOrEmpty(text))
-                {
-                    _inlineEditingShape.Name = text;
-                }
+                _isEndingInlineEdit = false;
             }
-
-            this.Controls.Remove(_inlineEditBox);
-            _inlineEditBox.Dispose();
-            _inlineEditBox = null;
-            _inlineEditingShape = null;
-            _inlineEditingMemberIndex = -1;
-
-            OnDocumentModified();
-            Invalidate();
         }
 
         private void OnInlineEditKeyDown(object sender, KeyEventArgs e)
@@ -773,13 +808,13 @@ namespace DiagramDesigner.Controls
             }
             else if (e.KeyCode == Keys.Escape)
             {
-                // 取消编辑
-                this.Controls.Remove(_inlineEditBox);
-                _inlineEditBox.Dispose();
-                _inlineEditBox = null;
-                _inlineEditingShape = null;
-                _inlineEditingMemberIndex = -1;
-                Invalidate();
+                // 取消编辑：复用 EndInlineEdit 的重入保护
+                if (_inlineEditBox != null)
+                {
+                    _inlineEditingShape = null;
+                    _inlineEditingMemberIndex = -1;
+                    EndInlineEdit();
+                }
                 e.SuppressKeyPress = true;
             }
         }

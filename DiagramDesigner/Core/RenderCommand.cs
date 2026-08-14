@@ -380,6 +380,7 @@ namespace DiagramDesigner.Core
             HandleType[] handleTypes, PointF[] handleIns, PointF[] handleOuts, bool closed)
         {
             GraphicsPath gp = new GraphicsPath();
+            gp.FillMode = FillMode.Winding;
             int n = normPoints.Length;
             if (n < 2) return gp;
 
@@ -438,17 +439,18 @@ namespace DiagramDesigner.Core
             List<GraphicsPath> absPaths = new List<GraphicsPath>();
             foreach (PathDef def in defs)
             {
-                if (def.Points == null || def.Points.Length < 3 || !def.Visible)
+                // 非形状（线体）允许 2+ 顶点；形状需要 3+ 顶点
+                int minPoints = def.IsShape ? 3 : 2;
+                if (def.Points == null || def.Points.Length < minPoints || !def.Visible)
                 {
                     absPaths.Add(null); // 占位，保持索引对齐
                     continue;
                 }
-                // 有曲线句柄时用 Bezier 路径，否则用多边形
                 GraphicsPath gp;
                 if (def.HasCurves)
                 {
                     gp = BuildCurveGraphicsPath(def.Points, rect,
-                        def.HandleTypes, def.HandleIns, def.HandleOuts, true);
+                        def.HandleTypes, def.HandleIns, def.HandleOuts, def.IsShape);
                 }
                 else
                 {
@@ -460,139 +462,174 @@ namespace DiagramDesigner.Core
                             rect.Y + def.Points[i].Y * rect.Height);
                     }
                     gp = new GraphicsPath();
-                    gp.AddPolygon(pts);
+                    gp.FillMode = FillMode.Winding;
+                    if (def.IsShape)
+                        gp.AddPolygon(pts);
+                    else
+                    {
+                        // 线体：添加开放路径（不闭合）
+                        for (int i = 0; i < pts.Length - 1; i++)
+                            gp.AddLine(pts[i], pts[i + 1]);
+                    }
                 }
                 absPaths.Add(gp);
             }
 
-            // 邻居模式布尔运算：每条路径的 BoolOp 作用于下方最近的非空路径
-            // 处理方向：自底向上（从最后一条路径向前处理）
+            // === 渲染组：每个组包含一个 Region + 构成它的原始路径列表 + 是否被布尔修改 ===
+            // 邻居模式：每条路径的 BoolOp 作用于下方最近的非空路径
+            // 处理方向：自底向上
             List<Region> renderRegions = new List<Region>();
-            List<int> regionPathIndices = new List<int>();
-            // 记录哪些区域是独立的（未被布尔运算修改），可直接描边原始路径
-            List<bool> regionIsOriginal = new List<bool>();
+            List<int> regionBasePath = new List<int>();      // 基础（下层）路径索引
+            List<List<int>> regionAllPaths = new List<List<int>>(); // 组内所有路径索引
+            List<bool> regionIsModified = new List<bool>();   // 是否被布尔运算修改
+            // 是否需要 Region 填充（Subtract/Intersect/Xor 需要，Union/None 不需要）
+            List<bool> regionNeedsRegionFill = new List<bool>();
 
             for (int i = absPaths.Count - 1; i >= 0; i--)
             {
                 if (absPaths[i] == null)
                     continue;
 
-                // 最后一条有效路径无 BoolOp（无下层路径）
                 BooleanOperation op = defs[i].BoolOp;
 
-                // 判断是否为最底层有效路径（下方无非空路径）
+                // 最底层有效路径无 BoolOp
                 bool hasLowerPath = false;
                 for (int j = i + 1; j < absPaths.Count; j++)
                 {
-                    if (absPaths[j] != null)
-                    {
-                        hasLowerPath = true;
-                        break;
-                    }
+                    if (absPaths[j] != null) { hasLowerPath = true; break; }
                 }
                 if (!hasLowerPath)
                     op = BooleanOperation.None;
 
-                if (op == BooleanOperation.None || op == BooleanOperation.Union)
+                if (op == BooleanOperation.None)
                 {
-                    // 独立路径：添加为新的渲染区域
+                    // 独立路径：创建新组
                     renderRegions.Add(new Region(absPaths[i]));
-                    regionPathIndices.Add(i);
-                    regionIsOriginal.Add(true);
+                    regionBasePath.Add(i);
+                    List<int> paths = new List<int>();
+                    paths.Add(i);
+                    regionAllPaths.Add(paths);
+                    regionIsModified.Add(false);
+                    regionNeedsRegionFill.Add(false);
                 }
                 else
                 {
-                    // Subtract/Intersect/Xor：查找下方最近的非空路径的渲染区域
+                    // 查找下方最近的非空路径所属的渲染组
                     int targetPathIdx = -1;
                     for (int j = i + 1; j < absPaths.Count; j++)
                     {
-                        if (absPaths[j] != null)
-                        {
-                            targetPathIdx = j;
-                            break;
-                        }
+                        if (absPaths[j] != null) { targetPathIdx = j; break; }
                     }
-
                     int targetIdx = -1;
                     if (targetPathIdx >= 0)
                     {
-                        for (int r = regionPathIndices.Count - 1; r >= 0; r--)
+                        for (int r = regionBasePath.Count - 1; r >= 0; r--)
                         {
-                            if (regionPathIndices[r] == targetPathIdx)
-                            {
-                                targetIdx = r;
-                                break;
-                            }
+                            if (regionBasePath[r] == targetPathIdx) { targetIdx = r; break; }
                         }
                     }
 
                     if (targetIdx >= 0)
                     {
-                        // 对下方非空路径的区域应用布尔运算
                         Region target = renderRegions[targetIdx];
                         switch (op)
                         {
+                            case BooleanOperation.Union:
+                                target.Union(absPaths[i]);
+                                // Union 不需要 Region 填充，可用 Winding GraphicsPath
+                                break;
                             case BooleanOperation.Subtract:
                                 target.Exclude(absPaths[i]);
+                                regionNeedsRegionFill[targetIdx] = true;
                                 break;
                             case BooleanOperation.Intersect:
                                 target.Intersect(absPaths[i]);
+                                regionNeedsRegionFill[targetIdx] = true;
                                 break;
                             case BooleanOperation.Xor:
                                 target.Xor(absPaths[i]);
+                                regionNeedsRegionFill[targetIdx] = true;
                                 break;
                         }
-                        // 标记该区域已被布尔运算修改，不能再描边原始路径
-                        regionIsOriginal[targetIdx] = false;
+                        regionIsModified[targetIdx] = true;
+                        regionAllPaths[targetIdx].Add(i);
                     }
                     else
                     {
-                        // 下方非空路径无渲染区域（被消费或为空），
-                        // 按独立路径处理
                         renderRegions.Add(new Region(absPaths[i]));
-                        regionPathIndices.Add(i);
-                        regionIsOriginal.Add(true);
+                        regionBasePath.Add(i);
+                        List<int> paths = new List<int>();
+                        paths.Add(i);
+                        regionAllPaths.Add(paths);
+                        regionIsModified.Add(false);
+                        regionNeedsRegionFill.Add(false);
                     }
                 }
             }
 
-            // 填充所有渲染区域
+            // === 填充 ===
             if (_fill)
             {
                 using (Brush brush = CreateFillBrush(rect, colors))
                 {
-                    foreach (Region r in renderRegions)
-                        g.FillRegion(brush, r);
-                }
-            }
-
-            // 描边：独立路径直接描边原始路径；布尔运算结果用 Region 描边
-            if (_stroke)
-            {
-                using (Pen pen = new Pen(stroke, _strokeWidth / scale))
-                using (Matrix mat = new Matrix())
-                {
                     for (int r = 0; r < renderRegions.Count; r++)
                     {
-                        if (regionIsOriginal[r])
+                        // 跳过非形状（线体）路径的填充
+                        int baseIdx = regionBasePath[r];
+                        if (baseIdx >= 0 && baseIdx < defs.Count && !defs[baseIdx].IsShape)
+                            continue;
+
+                        if (!regionNeedsRegionFill[r])
                         {
-                            // 独立路径：直接描边原始 GraphicsPath
-                            int pathIdx = regionPathIndices[r];
-                            if (pathIdx >= 0 && absPaths[pathIdx] != null)
-                                g.DrawPath(pen, absPaths[pathIdx]);
+                            // 未修改组或仅 Union 组：直接用 GraphicsPath 填充（保留曲线）
+                            using (GraphicsPath combined = new GraphicsPath())
+                            {
+                                combined.FillMode = FillMode.Winding;
+                                foreach (int pidx in regionAllPaths[r])
+                                {
+                                    if (absPaths[pidx] != null)
+                                        combined.AddPath(absPaths[pidx], false);
+                                }
+                                g.FillPath(brush, combined);
+                            }
                         }
                         else
                         {
-                            // 布尔运算结果：从 Region 提取扫描矩形合并为路径描边
-                            RectangleF[] scans = renderRegions[r].GetRegionScans(mat);
-                            if (scans.Length == 0)
-                                continue;
-                            using (GraphicsPath outlinePath = new GraphicsPath())
+                            // Subtract/Intersect/Xor 组：用 Region 填充
+                            g.FillRegion(brush, renderRegions[r]);
+                        }
+                    }
+                }
+            }
+
+            // === 描边 ===
+            if (_stroke)
+            {
+                using (Pen pen = new Pen(stroke, _strokeWidth / scale))
+                {
+                    for (int r = 0; r < renderRegions.Count; r++)
+                    {
+                        if (!regionIsModified[r])
+                        {
+                            // 未修改组：直接描边原始路径（保留曲线）
+                            foreach (int pidx in regionAllPaths[r])
                             {
-                                foreach (RectangleF scan in scans)
-                                    outlinePath.AddRectangle(scan);
-                                g.DrawPath(pen, outlinePath);
+                                if (absPaths[pidx] != null)
+                                    g.DrawPath(pen, absPaths[pidx]);
                             }
+                        }
+                        else
+                        {
+                            // 布尔修改组（含 Union）：裁剪到结果区域，绘制构成该区域的原始路径
+                            // 裁剪使内部交线不可见，同时保留曲线
+                            GraphicsState state = g.Save();
+                            g.SetClip(renderRegions[r], CombineMode.Replace);
+                            foreach (int pidx in regionAllPaths[r])
+                            {
+                                if (pidx >= 0 && pidx < absPaths.Count && absPaths[pidx] != null)
+                                    g.DrawPath(pen, absPaths[pidx]);
+                            }
+                            g.Restore(state);
                         }
                     }
                 }

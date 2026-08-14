@@ -507,8 +507,10 @@ namespace DiagramDesigner.Shapes
                 switch (alignment)
                 {
                     case NameAlignment.TopLeft:
-                        sf.Alignment = StringAlignment.Near;
-                        sf.LineAlignment = StringAlignment.Near;
+                        // TopLeft 仅决定 Zone 的位置（左上角标签区域），
+                        // 文字在 Zone 内仍居中对齐，与 Zone 创建注释一致
+                        sf.Alignment = StringAlignment.Center;
+                        sf.LineAlignment = StringAlignment.Center;
                         break;
 
                     case NameAlignment.TopCenter:

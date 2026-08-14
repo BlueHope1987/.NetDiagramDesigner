@@ -601,6 +601,10 @@ namespace DiagramDesigner.Serialization
         private bool _fill = true;
         private bool _stroke = true;
         private string _pathDefsStr = "";
+        // Polygon 类型曲线句柄数据（字符串形式）
+        private string _polyHandleTypesStr = "";
+        private string _polyHandleInsStr = "";
+        private string _polyHandleOutsStr = "";
 
         /// <summary>RenderCommandType 枚举的字符串形式</summary>
         public string CommandType
@@ -735,6 +739,27 @@ namespace DiagramDesigner.Serialization
         {
             get { return _pathDefsStr; }
             set { _pathDefsStr = value; }
+        }
+
+        /// <summary>Polygon 类型的顶点句柄类型数组（逗号分隔的 HandleType 枚举值）</summary>
+        public string PolyHandleTypesStr
+        {
+            get { return _polyHandleTypesStr; }
+            set { _polyHandleTypesStr = value; }
+        }
+
+        /// <summary>Polygon 类型的进边控制点偏移数组（"x,y|x,y|..." 形式）</summary>
+        public string PolyHandleInsStr
+        {
+            get { return _polyHandleInsStr; }
+            set { _polyHandleInsStr = value; }
+        }
+
+        /// <summary>Polygon 类型的出边控制点偏移数组（"x,y|x,y|..." 形式）</summary>
+        public string PolyHandleOutsStr
+        {
+            get { return _polyHandleOutsStr; }
+            set { _polyHandleOutsStr = value; }
         }
     }
 

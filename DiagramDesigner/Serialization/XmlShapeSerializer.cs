@@ -409,6 +409,9 @@ namespace DiagramDesigner.Serialization
             rcd.PolygonPointsStr = PointsToString(rc.PolygonPoints);
             rcd.MultiPathsStr = MultiPathsToString(rc.MultiPaths);
             rcd.PathDefsStr = PathDefsToString(rc.PathDefs);
+            rcd.PolyHandleTypesStr = HandleTypesToString(rc.PolyHandleTypes);
+            rcd.PolyHandleInsStr = HandlePointsToString(rc.PolyHandleIns);
+            rcd.PolyHandleOutsStr = HandlePointsToString(rc.PolyHandleOuts);
             rcd.BoolOp = rc.BoolOp.ToString();
             rcd.UseShapeColors = rc.UseShapeColors;
             rcd.Fill = rc.Fill;
@@ -445,6 +448,9 @@ namespace DiagramDesigner.Serialization
             rc.PolygonPoints = ParsePoints(rcd.PolygonPointsStr);
             rc.MultiPaths = ParseMultiPaths(rcd.MultiPathsStr);
             rc.PathDefs = ParsePathDefs(rcd.PathDefsStr);
+            rc.PolyHandleTypes = ParseHandleTypes(rcd.PolyHandleTypesStr);
+            rc.PolyHandleIns = ParseHandlePoints(rcd.PolyHandleInsStr);
+            rc.PolyHandleOuts = ParseHandlePoints(rcd.PolyHandleOutsStr);
 
             try
             {
@@ -735,7 +741,9 @@ namespace DiagramDesigner.Serialization
 
         /// <summary>
         /// 将 List&lt;PathDef&gt; 编码为字符串。
-        /// 每条路径编码为 "x1,y1|x2,y2|...;BoolOp"，路径之间以 '|' 连接。
+        /// 每条路径编码为 "x1,y1|x2,y2|...;BoolOp,IsShape#handleData"
+        /// 其中 handleData 格式为 "HT,hiX,hiY,hoX,hoY#HT,..."（每个顶点的句柄）
+        /// 无句柄数据时省略 # 部分。向后兼容：无逗号时 IsShape 默认 true。
         /// </summary>
         private static string PathDefsToString(List<PathDef> defs)
         {
@@ -748,7 +756,28 @@ namespace DiagramDesigner.Serialization
                 if (def == null)
                     continue;
                 string pts = PointsToPipeString(def.Points);
-                pathStrs.Add(pts + ";" + def.BoolOp.ToString());
+                string meta = def.BoolOp.ToString() + "," + def.IsShape.ToString().ToLower();
+
+                // 编码句柄数据
+                string handleStr = "";
+                if (def.HandleTypes != null && def.Points != null)
+                {
+                    List<string> handleParts = new List<string>();
+                    for (int i = 0; i < def.Points.Length; i++)
+                    {
+                        HandleType ht = (i < def.HandleTypes.Length) ? def.HandleTypes[i] : HandleType.None;
+                        PointF hi = (i < def.HandleIns.Length) ? def.HandleIns[i] : PointF.Empty;
+                        PointF ho = (i < def.HandleOuts.Length) ? def.HandleOuts[i] : PointF.Empty;
+                        handleParts.Add((int)ht + ","
+                            + hi.X.ToString(CultureInfo.InvariantCulture) + ","
+                            + hi.Y.ToString(CultureInfo.InvariantCulture) + ","
+                            + ho.X.ToString(CultureInfo.InvariantCulture) + ","
+                            + ho.Y.ToString(CultureInfo.InvariantCulture));
+                    }
+                    handleStr = "#" + string.Join("#", handleParts.ToArray());
+                }
+
+                pathStrs.Add(pts + ";" + meta + handleStr);
             }
 
             if (pathStrs.Count == 0)
@@ -757,7 +786,10 @@ namespace DiagramDesigner.Serialization
         }
 
         /// <summary>
-        /// 将 "x1,y1|x2,y2;BoolOp|..." 字符串解码为 List&lt;PathDef&gt;。
+        /// 将路径定义字符串解码为 List&lt;PathDef&gt;。
+        /// 支持新旧两种格式：
+        ///   旧格式: "x1,y1|x2,y2;BoolOp|..."（无 IsShape 和句柄数据）
+        ///   新格式: "x1,y1|x2,y2;BoolOp,IsShape#handleData|..."
         /// 解析失败时返回 null，保证向后兼容。
         /// </summary>
         private static List<PathDef> ParsePathDefs(string s)
@@ -775,36 +807,74 @@ namespace DiagramDesigner.Serialization
                 if (token.Length == 0)
                     continue;
 
+                // 分离句柄数据（# 后部分）
+                string handleSection = "";
+                int hashIdx = token.IndexOf('#');
+                if (hashIdx >= 0)
+                {
+                    handleSection = token.Substring(hashIdx);
+                    token = token.Substring(0, hashIdx);
+                }
+
                 string pointPart = token;
-                string boolOpPart = "";
+                string metaPart = "";
 
                 int sep = token.IndexOf(';');
                 if (sep >= 0)
                 {
                     pointPart = token.Substring(0, sep);
-                    boolOpPart = token.Substring(sep + 1);
+                    metaPart = token.Substring(sep + 1);
                 }
 
                 PointF pt;
                 if (TryParsePoint(pointPart, out pt))
                     current.Add(pt);
 
-                // 遇到 ';' 表示该路径结束，附带其 BoolOp
+                // 遇到 ';' 表示该路径结束，附带其 BoolOp + IsShape
                 if (sep >= 0)
                 {
+                    // 解析元数据：格式为 "BoolOp" 或 "BoolOp,IsShape"
                     BooleanOperation op = BooleanOperation.None;
-                    try
+                    bool isShape = true;
+
+                    string[] metaParts = metaPart.Split(',');
+                    if (metaParts.Length >= 1)
                     {
-                        op = (BooleanOperation)Enum.Parse(
-                            typeof(BooleanOperation), boolOpPart.Trim());
+                        try
+                        {
+                            op = (BooleanOperation)Enum.Parse(
+                                typeof(BooleanOperation), metaParts[0].Trim());
+                        }
+                        catch
+                        {
+                            op = BooleanOperation.None;
+                        }
                     }
-                    catch
+                    if (metaParts.Length >= 2)
                     {
-                        op = BooleanOperation.None;
+                        try
+                        {
+                            isShape = bool.Parse(metaParts[1].Trim());
+                        }
+                        catch
+                        {
+                            isShape = true;
+                        }
                     }
 
                     if (current.Count > 0)
-                        result.Add(new PathDef(current.ToArray(), op));
+                    {
+                        PathDef pd = new PathDef(current.ToArray(), op);
+                        pd.IsShape = isShape;
+
+                        // 解析句柄数据
+                        if (handleSection.Length > 1)
+                        {
+                            ParsePathDefHandles(pd, handleSection.Substring(1)); // 跳过 '#'
+                        }
+
+                        result.Add(pd);
+                    }
                     current.Clear();
                 }
             }
@@ -812,6 +882,68 @@ namespace DiagramDesigner.Serialization
             if (result.Count == 0)
                 return null;
             return result;
+        }
+
+        /// <summary>
+        /// 解析路径句柄数据字符串，设置到 PathDef。
+        /// 格式: "HT,hiX,hiY,hoX,hoY#HT,hiX,hiY,hoX,hoY#..."
+        /// </summary>
+        private static void ParsePathDefHandles(PathDef pd, string handleStr)
+        {
+            if (pd.Points == null || pd.Points.Length == 0)
+                return;
+
+            string[] entries = handleStr.Split('#');
+            if (entries.Length == 0)
+                return;
+
+            int n = pd.Points.Length;
+            HandleType[] hTypes = new HandleType[n];
+            PointF[] hIns = new PointF[n];
+            PointF[] hOuts = new PointF[n];
+            bool hasHandles = false;
+
+            for (int i = 0; i < n && i < entries.Length; i++)
+            {
+                string entry = entries[i].Trim();
+                if (entry.Length == 0)
+                {
+                    hTypes[i] = HandleType.None;
+                    hIns[i] = PointF.Empty;
+                    hOuts[i] = PointF.Empty;
+                    continue;
+                }
+
+                string[] parts = entry.Split(',');
+                if (parts.Length >= 5)
+                {
+                    try
+                    {
+                        hTypes[i] = (HandleType)int.Parse(parts[0].Trim());
+                        hIns[i] = new PointF(
+                            float.Parse(parts[1].Trim(), CultureInfo.InvariantCulture),
+                            float.Parse(parts[2].Trim(), CultureInfo.InvariantCulture));
+                        hOuts[i] = new PointF(
+                            float.Parse(parts[3].Trim(), CultureInfo.InvariantCulture),
+                            float.Parse(parts[4].Trim(), CultureInfo.InvariantCulture));
+                        if (hTypes[i] != HandleType.None)
+                            hasHandles = true;
+                    }
+                    catch
+                    {
+                        hTypes[i] = HandleType.None;
+                        hIns[i] = PointF.Empty;
+                        hOuts[i] = PointF.Empty;
+                    }
+                }
+            }
+
+            if (hasHandles)
+            {
+                pd.HandleTypes = hTypes;
+                pd.HandleIns = hIns;
+                pd.HandleOuts = hOuts;
+            }
         }
 
         /// <summary>
@@ -860,6 +992,75 @@ namespace DiagramDesigner.Serialization
                 return true;
             }
             return false;
+        }
+
+        // =====================================================================
+        // Polygon 类型曲线句柄数据的编解码辅助方法
+        // =====================================================================
+
+        /// <summary>
+        /// 将 HandleType[] 编码为逗号分隔的整数字符串。
+        /// 如 "0,1,2,0"（0=None, 1=Symmetric, 2=Asymmetric）
+        /// </summary>
+        private static string HandleTypesToString(HandleType[] types)
+        {
+            if (types == null || types.Length == 0)
+                return "";
+            string[] parts = new string[types.Length];
+            for (int i = 0; i < types.Length; i++)
+                parts[i] = ((int)types[i]).ToString();
+            return string.Join(",", parts);
+        }
+
+        /// <summary>
+        /// 将 PointF[] 编码为 "x,y|x,y|..." 字符串。
+        /// </summary>
+        private static string HandlePointsToString(PointF[] pts)
+        {
+            if (pts == null || pts.Length == 0)
+                return "";
+            return PointsToPipeString(pts);
+        }
+
+        /// <summary>
+        /// 将逗号分隔的整数字符串解码为 HandleType[]。
+        /// </summary>
+        private static HandleType[] ParseHandleTypes(string s)
+        {
+            if (string.IsNullOrEmpty(s))
+                return null;
+            string[] parts = s.Split(',');
+            List<HandleType> result = new List<HandleType>();
+            foreach (string p in parts)
+            {
+                try
+                {
+                    result.Add((HandleType)int.Parse(p.Trim()));
+                }
+                catch
+                {
+                    result.Add(HandleType.None);
+                }
+            }
+            return (result.Count > 0) ? result.ToArray() : null;
+        }
+
+        /// <summary>
+        /// 将 "x,y|x,y|..." 字符串解码为 PointF[]。
+        /// </summary>
+        private static PointF[] ParseHandlePoints(string s)
+        {
+            if (string.IsNullOrEmpty(s))
+                return null;
+            string[] parts = s.Split('|');
+            List<PointF> result = new List<PointF>();
+            foreach (string p in parts)
+            {
+                PointF pt;
+                if (TryParsePoint(p, out pt))
+                    result.Add(pt);
+            }
+            return (result.Count > 0) ? result.ToArray() : null;
         }
     }
 }

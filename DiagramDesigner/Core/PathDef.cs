@@ -15,6 +15,7 @@ namespace DiagramDesigner.Core
         private PointF[] _points = null;
         private BooleanOperation _boolOp = BooleanOperation.None;
         private bool _visible = true;
+        private bool _isShape = true;
 
         // 曲线句柄数据（与 _points 等长，null 表示无句柄）
         private HandleType[] _handleTypes = null;
@@ -40,6 +41,13 @@ namespace DiagramDesigner.Core
         {
             get { return _visible; }
             set { _visible = value; }
+        }
+
+        /// <summary>是否为形状（填充+闭合），false=线体（仅描边）</summary>
+        public bool IsShape
+        {
+            get { return _isShape; }
+            set { _isShape = value; }
         }
 
         /// <summary>顶点句柄类型数组（null 表示全部无句柄）</summary>
@@ -126,6 +134,7 @@ namespace DiagramDesigner.Core
             PathDef clone = new PathDef();
             clone._boolOp = _boolOp;
             clone._visible = _visible;
+            clone._isShape = _isShape;
             if (_points != null)
             {
                 clone._points = new PointF[_points.Length];
