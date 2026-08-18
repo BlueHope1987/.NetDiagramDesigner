@@ -53,6 +53,7 @@
     <Compile Include="Core\ShapeComposer.cs" />
     <Compile Include="Core\ShapeAction.cs" />
     <Compile Include="Core\CanvasConfig.cs" />
+    <Compile Include="Core\CurveAwareMerge.cs" />
     <Compile Include="Core\EditorEvents.cs" />
     <Compile Include="Config\GlobalConfig.cs" />
     <Compile Include="Controls\ToolboxPanel.cs" />

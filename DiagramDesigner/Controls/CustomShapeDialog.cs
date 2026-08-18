@@ -51,6 +51,7 @@ namespace DiagramDesigner.Controls
         private Button _btnClearGeom;
         private Button _btnCircle;
         private CheckBox _chkIsShape;
+        private CheckBox _chkPreview;
 
         // 多路径工具栏控件
         private Panel _panelPathToolbar;
@@ -394,6 +395,16 @@ namespace DiagramDesigner.Controls
             _chkIsShape.Checked = true;
             _chkIsShape.CheckedChanged += new EventHandler(OnIsShapeChanged);
             page.Controls.Add(_chkIsShape);
+            tbX += 55;
+
+            // "预览"复选框：选中时在画布上呈现布尔运算后的结果
+            _chkPreview = new CheckBox();
+            _chkPreview.Text = "预览";
+            _chkPreview.Location = new Point(tbX, toolbarY + 2);
+            _chkPreview.Size = new Size(55, tbBtnH);
+            _chkPreview.Checked = false;
+            _chkPreview.CheckedChanged += new EventHandler(OnPreviewChanged);
+            page.Controls.Add(_chkPreview);
 
             // 第三行：路径/区域工具栏（单行）
             BuildPathToolbar(page, rightX, 62);
@@ -555,8 +566,8 @@ namespace DiagramDesigner.Controls
         }
 
         /// <summary>
-        /// 合并按钮：将当前路径与下方最近的非空路径依据布尔运算合并为单一新形状。
-        /// 仅合并当前路径和下方一个非空路径（非全部路径）。
+        /// 合并按钮：将当前路径与下方路径的布尔运算结果生成为单一新形状。
+        /// 使用 Region 计算布尔结果，再通过位图轮廓追踪提取外轮廓多边形。
         /// </summary>
         private void OnMergePaths(object sender, EventArgs e)
         {
@@ -565,8 +576,6 @@ namespace DiagramDesigner.Controls
             List<CurveVertex> currentPath = _paths[_currentPathIndex];
             if (currentPath == null || currentPath.Count < 3)
                 return;
-            BooleanOperation currentOp = (_currentPathIndex < _pathBoolOps.Count)
-                ? _pathBoolOps[_currentPathIndex] : BooleanOperation.None;
 
             // 查找下方最近的非空路径
             int lowerIdx = -1;
@@ -581,84 +590,174 @@ namespace DiagramDesigner.Controls
             if (lowerIdx < 0)
                 return; // 无下方非空路径
 
-            List<CurveVertex> lowerPath = _paths[lowerIdx];
+            // 获取当前路径的布尔运算类型，默认为并集
+            BooleanOperation op = (_currentPathIndex < _pathBoolOps.Count)
+                ? _pathBoolOps[_currentPathIndex] : BooleanOperation.None;
+            if (op == BooleanOperation.None)
+            {
+                op = BooleanOperation.Union;
+                if (_currentPathIndex < _pathBoolOps.Count)
+                    _pathBoolOps[_currentPathIndex] = op;
+            }
 
-            // 计算两条路径的包围盒
+            // 查找整个布尔组的底部（基础路径）
+            int groupBottom = lowerIdx;
+            while (true)
+            {
+                BooleanOperation bottomOp = (groupBottom < _pathBoolOps.Count)
+                    ? _pathBoolOps[groupBottom] : BooleanOperation.None;
+                if (bottomOp == BooleanOperation.None)
+                    break;
+                int nextBelow = -1;
+                for (int j = groupBottom + 1; j < _paths.Count; j++)
+                {
+                    if (_paths[j] != null && _paths[j].Count >= 3)
+                    {
+                        nextBelow = j;
+                        break;
+                    }
+                }
+                if (nextBelow < 0)
+                    break;
+                groupBottom = nextBelow;
+            }
+
+            // 收集组内所有有效路径索引（从底部到顶部，降序）
+            List<int> groupPathIndices = new List<int>();
+            for (int i = groupBottom; i >= _currentPathIndex; i--)
+            {
+                if (_paths[i] != null && _paths[i].Count >= 3)
+                    groupPathIndices.Add(i);
+            }
+            if (groupPathIndices.Count < 2)
+                return;
+
+            // 构建 GraphicsPath 列表并计算边界
+            List<GraphicsPath> gps = new List<GraphicsPath>();
+            List<BooleanOperation> ops = new List<BooleanOperation>();
             float minX = float.MaxValue, minY = float.MaxValue;
             float maxX = float.MinValue, maxY = float.MinValue;
-            foreach (CurveVertex v in currentPath)
-            {
-                PointF pt = v.Position;
-                if (pt.X < minX) minX = pt.X;
-                if (pt.Y < minY) minY = pt.Y;
-                if (pt.X > maxX) maxX = pt.X;
-                if (pt.Y > maxY) maxY = pt.Y;
-            }
-            foreach (CurveVertex v in lowerPath)
-            {
-                PointF pt = v.Position;
-                if (pt.X < minX) minX = pt.X;
-                if (pt.Y < minY) minY = pt.Y;
-                if (pt.X > maxX) maxX = pt.X;
-                if (pt.Y > maxY) maxY = pt.Y;
-            }
-            if (maxX - minX < 1 || maxY - minY < 1)
-                return;
 
-            // 使用 Region 计算布尔运算结果
-            GraphicsPath upperGP = new GraphicsPath();
-            upperGP.AddPolygon(ToPointArray(currentPath));
-            GraphicsPath lowerGP = new GraphicsPath();
-            lowerGP.AddPolygon(ToPointArray(lowerPath));
-
-            Region resultRegion;
-            switch (currentOp)
+            foreach (int idx in groupPathIndices)
             {
-                case BooleanOperation.Subtract:
-                    resultRegion = new Region(lowerGP);
-                    resultRegion.Exclude(upperGP);
-                    break;
-                case BooleanOperation.Intersect:
-                    resultRegion = new Region(lowerGP);
-                    resultRegion.Intersect(upperGP);
-                    break;
-                case BooleanOperation.Xor:
-                    resultRegion = new Region(lowerGP);
-                    resultRegion.Xor(upperGP);
-                    break;
-                case BooleanOperation.Union:
-                    resultRegion = new Region(lowerGP);
-                    resultRegion.Union(upperGP);
-                    break;
-                default:
-                    resultRegion = new Region(lowerGP);
-                    resultRegion.Union(upperGP);
-                    break;
+                List<CurveVertex> verts = _paths[idx];
+                bool hasCurves = false;
+                foreach (CurveVertex v in verts)
+                    if (v.Handle != HandleType.None) { hasCurves = true; break; }
+                gps.Add(BuildEditorPath(verts, true, hasCurves));
+
+                BooleanOperation pathOp = (idx < _pathBoolOps.Count)
+                    ? _pathBoolOps[idx] : BooleanOperation.None;
+                ops.Add(pathOp);
+
+                foreach (CurveVertex v in verts)
+                {
+                    minX = Math.Min(minX, v.Position.X);
+                    minY = Math.Min(minY, v.Position.Y);
+                    maxX = Math.Max(maxX, v.Position.X);
+                    maxY = Math.Max(maxY, v.Position.Y);
+                }
             }
 
-            // 通过位图轮廓追踪提取外轮廓
-            List<Region> regionList = new List<Region> { resultRegion };
-            List<PointF> mergedPath = TraceRegionOutline(regionList, minX, minY, maxX, maxY);
+            // 计算布尔运算结果 Region（从底部路径开始）
+            Region resultRegion = new Region(gps[0]);
+            for (int i = 1; i < gps.Count; i++)
+            {
+                BooleanOperation pathOp = ops[i];
+                if (pathOp == BooleanOperation.None)
+                    pathOp = BooleanOperation.Union;
+                switch (pathOp)
+                {
+                    case BooleanOperation.Union:
+                        resultRegion.Union(gps[i]);
+                        break;
+                    case BooleanOperation.Subtract:
+                        resultRegion.Exclude(gps[i]);
+                        break;
+                    case BooleanOperation.Intersect:
+                        resultRegion.Intersect(gps[i]);
+                        break;
+                    case BooleanOperation.Xor:
+                        resultRegion.Xor(gps[i]);
+                        break;
+                }
+            }
 
+            // 追踪轮廓（添加额外边距以容纳曲线扩展）
+            // 优先尝试曲线感知合并（保留贝塞尔句柄），失败则回退到位图追踪
+            List<CurveVertex> mergedPath = null;
+
+            // 准备曲线感知合并所需的路径和操作列表（按从顶到底的顺序）
+            List<List<CurveVertex>> mergePaths = new List<List<CurveVertex>>();
+            List<BooleanOperation> mergeOps = new List<BooleanOperation>();
+            // groupPathIndices 是从底到顶的降序，需要反转为从顶到底
+            for (int i = groupPathIndices.Count - 1; i >= 0; i--)
+            {
+                int idx = groupPathIndices[i];
+                mergePaths.Add(_paths[idx]);
+                BooleanOperation pathOp = (idx < _pathBoolOps.Count)
+                    ? _pathBoolOps[idx] : BooleanOperation.None;
+                mergeOps.Add(pathOp);
+            }
+
+            try
+            {
+                mergedPath = CurveAwareMerge.Merge(
+                    mergePaths, mergeOps, resultRegion,
+                    minX - 10, minY - 10, maxX + 10, maxY + 10);
+            }
+            catch { mergedPath = null; }
+
+            // 曲线感知合并失败时回退到位图追踪
+            if (mergedPath == null || mergedPath.Count < 3)
+            {
+                List<PointF> outline = null;
+                try
+                {
+                    List<Region> regions = new List<Region>();
+                    regions.Add(resultRegion);
+                    outline = TraceRegionOutline(regions, minX - 10, minY - 10, maxX + 10, maxY + 10);
+                }
+                catch { }
+
+                if (outline != null && outline.Count >= 3)
+                {
+                    mergedPath = new List<CurveVertex>();
+                    foreach (PointF p in outline)
+                        mergedPath.Add(new CurveVertex(p));
+                }
+            }
+
+            // 清理资源
             resultRegion.Dispose();
-            upperGP.Dispose();
-            lowerGP.Dispose();
+            foreach (GraphicsPath gp in gps) gp.Dispose();
 
-            if (mergedPath.Count < 3)
-                return;
+            if (mergedPath != null && mergedPath.Count >= 3)
+            {
+                // 从高索引到低索引移除组内路径
+                groupPathIndices.Sort();
+                for (int i = groupPathIndices.Count - 1; i >= 0; i--)
+                {
+                    int idx = groupPathIndices[i];
+                    _paths.RemoveAt(idx);
+                    _pathBoolOps.RemoveAt(idx);
+                    _pathIsShape.RemoveAt(idx);
+                }
 
-            // 替换当前路径为合并结果，删除下方路径
-            _paths[_currentPathIndex] = CurveVertex.FromPointList(mergedPath);
-            _pathBoolOps[_currentPathIndex] = BooleanOperation.None;
-            _paths.RemoveAt(lowerIdx);
-            _pathBoolOps.RemoveAt(lowerIdx);
-            _pathIsShape.RemoveAt(lowerIdx);
+                // 在组顶部原位置插入合并后的路径
+                int insertIdx = groupPathIndices[0];
+                _paths.Insert(insertIdx, mergedPath);
+                _pathBoolOps.Insert(insertIdx, BooleanOperation.None);
+                _pathIsShape.Insert(insertIdx, true);
+                _currentPathIndex = insertIdx;
+            }
+
             _selectedVertices.Clear();
             _dragIndex = -1;
             _closedPath = true;
             _filled = true;
-
             RefreshPathCombo();
+            UpdateBoolOpButtonText();
             _canvasPanel.Invalidate();
         }
 
@@ -1961,6 +2060,14 @@ namespace DiagramDesigner.Controls
             float canvasW = (float)_canvasPanel.Width;
             float canvasH = (float)_canvasPanel.Height;
 
+            // 预览模式：渲染布尔运算后的结果
+            if (_chkPreview != null && _chkPreview.Checked && _selectedZoneIndex < 0)
+            {
+                RenderPreview(g, canvasW, canvasH);
+                RenderZonesAndInfo(g, canvasW, canvasH);
+                return;
+            }
+
             // 1. 绘制路径
             if (_paths.Count > 0)
             {
@@ -2052,6 +2159,302 @@ namespace DiagramDesigner.Controls
                 }
             }
 
+            // 绘制框选矩形 + Zone + 信息标注
+            RenderZonesAndInfo(g, canvasW, canvasH);
+        }
+
+        /// <summary>预览复选框变更：重绘画布</summary>
+        private void OnPreviewChanged(object sender, EventArgs e)
+        {
+            _canvasPanel.Invalidate();
+        }
+
+        /// <summary>
+        /// 预览模式渲染：将所有路径按布尔运算组合后渲染计算结果。
+        /// 逻辑与 RenderCommand.DrawCompoundPolygon 一致，但使用编辑器坐标。
+        /// </summary>
+        private void RenderPreview(Graphics g, float canvasW, float canvasH)
+        {
+            if (_paths == null || _paths.Count == 0)
+                return;
+
+            // 构建每条路径的 GraphicsPath 和 PathDef
+            List<GraphicsPath> absPaths = new List<GraphicsPath>();
+            List<bool> isShapeList = new List<bool>();
+            List<BooleanOperation> boolOps = new List<BooleanOperation>();
+
+            for (int p = 0; p < _paths.Count; p++)
+            {
+                List<CurveVertex> verts = _paths[p];
+                bool isShape = (p < _pathIsShape.Count) ? _pathIsShape[p] : true;
+                BooleanOperation op = (p < _pathBoolOps.Count) ? _pathBoolOps[p] : BooleanOperation.None;
+
+                if (verts == null || verts.Count < (isShape ? 3 : 2))
+                {
+                    absPaths.Add(null);
+                    isShapeList.Add(isShape);
+                    boolOps.Add(op);
+                    continue;
+                }
+
+                bool hasCurves = false;
+                foreach (CurveVertex v in verts)
+                    if (v.Handle != HandleType.None) { hasCurves = true; break; }
+
+                GraphicsPath gp = BuildEditorPath(verts, isShape, hasCurves);
+                if (!isShape)
+                {
+                    // 线体：不闭合
+                    gp = new GraphicsPath();
+                    for (int i = 0; i < verts.Count - 1; i++)
+                    {
+                        bool hasOut = verts[i].Handle != HandleType.None;
+                        bool hasIn = verts[i + 1].Handle != HandleType.None;
+                        if (!hasOut && !hasIn)
+                            gp.AddLine(verts[i].Position, verts[i + 1].Position);
+                        else
+                        {
+                            PointF cp1 = hasOut ? verts[i].GetHandleOutAbs() : verts[i].Position;
+                            PointF cp2 = hasIn ? verts[i + 1].GetHandleInAbs() : verts[i + 1].Position;
+                            gp.AddBezier(verts[i].Position, cp1, cp2, verts[i + 1].Position);
+                        }
+                    }
+                }
+
+                absPaths.Add(gp);
+                isShapeList.Add(isShape);
+                boolOps.Add(op);
+            }
+
+            // === 构建渲染组（与 DrawCompoundPolygon 逻辑一致）===
+            List<Region> renderRegions = new List<Region>();
+            List<List<int>> regionAllPaths = new List<List<int>>();
+            List<bool> regionIsModified = new List<bool>();
+            List<bool> regionNeedsRegionFill = new List<bool>();
+            List<BooleanOperation> regionOpType = new List<BooleanOperation>();
+
+            for (int i = absPaths.Count - 1; i >= 0; i--)
+            {
+                if (absPaths[i] == null) continue;
+
+                BooleanOperation op = boolOps[i];
+                bool hasLowerPath = false;
+                for (int j = i + 1; j < absPaths.Count; j++)
+                    if (absPaths[j] != null) { hasLowerPath = true; break; }
+                if (!hasLowerPath) op = BooleanOperation.None;
+
+                if (op == BooleanOperation.None)
+                {
+                    renderRegions.Add(new Region(absPaths[i]));
+                    List<int> paths = new List<int>(); paths.Add(i);
+                    regionAllPaths.Add(paths);
+                    regionIsModified.Add(false);
+                    regionNeedsRegionFill.Add(false);
+                    regionOpType.Add(BooleanOperation.None);
+                }
+                else
+                {
+                    int targetPathIdx = -1;
+                    for (int j = i + 1; j < absPaths.Count; j++)
+                        if (absPaths[j] != null) { targetPathIdx = j; break; }
+
+                    int targetIdx = -1;
+                    if (targetPathIdx >= 0)
+                    {
+                        for (int r = 0; r < regionAllPaths.Count; r++)
+                        {
+                            foreach (int pidx in regionAllPaths[r])
+                                if (pidx == targetPathIdx) { targetIdx = r; break; }
+                            if (targetIdx >= 0) break;
+                        }
+                    }
+
+                    if (targetIdx >= 0)
+                    {
+                        Region target = renderRegions[targetIdx];
+                        switch (op)
+                        {
+                            case BooleanOperation.Union:
+                                target.Union(absPaths[i]);
+                                // Union 多路径时用 Region 填充以确保重叠区域正确填充
+                                if (regionAllPaths[targetIdx].Count > 0)
+                                    regionNeedsRegionFill[targetIdx] = true;
+                                regionOpType[targetIdx] = BooleanOperation.Union;
+                                break;
+                            case BooleanOperation.Subtract:
+                                target.Exclude(absPaths[i]);
+                                regionNeedsRegionFill[targetIdx] = true;
+                                regionOpType[targetIdx] = BooleanOperation.Subtract;
+                                break;
+                            case BooleanOperation.Intersect:
+                                target.Intersect(absPaths[i]);
+                                regionNeedsRegionFill[targetIdx] = true;
+                                regionOpType[targetIdx] = BooleanOperation.Intersect;
+                                break;
+                            case BooleanOperation.Xor:
+                                target.Xor(absPaths[i]);
+                                regionNeedsRegionFill[targetIdx] = true;
+                                regionOpType[targetIdx] = BooleanOperation.Xor;
+                                break;
+                        }
+                        regionIsModified[targetIdx] = true;
+                        regionAllPaths[targetIdx].Add(i);
+                    }
+                    else
+                    {
+                        renderRegions.Add(new Region(absPaths[i]));
+                        List<int> paths = new List<int>(); paths.Add(i);
+                        regionAllPaths.Add(paths);
+                        regionIsModified.Add(false);
+                        regionNeedsRegionFill.Add(false);
+                        regionOpType.Add(BooleanOperation.None);
+                    }
+                }
+            }
+
+            // === 填充 ===
+            using (Brush fillBrush = new SolidBrush(Color.FromArgb(180, _geomFillColor)))
+            {
+                for (int r = 0; r < renderRegions.Count; r++)
+                {
+                    int baseIdx = -1;
+                    if (regionAllPaths[r].Count > 0)
+                        baseIdx = regionAllPaths[r][0]; // 基础路径是组内最先加入的（底部路径）
+                    if (baseIdx >= 0 && baseIdx < isShapeList.Count && !isShapeList[baseIdx])
+                        continue;
+
+                    if (!regionNeedsRegionFill[r])
+                    {
+                        // 未修改组（单路径 None）：直接用 GraphicsPath 填充
+                        using (GraphicsPath combined = new GraphicsPath())
+                        {
+                            combined.FillMode = FillMode.Winding;
+                            foreach (int pidx in regionAllPaths[r])
+                                if (absPaths[pidx] != null)
+                                    combined.AddPath(absPaths[pidx], false);
+                            g.FillPath(fillBrush, combined);
+                        }
+                    }
+                    else
+                    {
+                        // Union/Subtract/Intersect/Xor 组：用 Region 填充（确保重叠区域正确）
+                        g.FillRegion(fillBrush, renderRegions[r]);
+                    }
+                }
+            }
+
+            // === 描边 ===
+            using (Pen pen = new Pen(_geomBorderColor, 2f))
+            {
+                for (int r = 0; r < renderRegions.Count; r++)
+                {
+                    bool isUnionGroup = regionIsModified[r] && regionOpType[r] == BooleanOperation.Union;
+
+                    if (!regionIsModified[r])
+                    {
+                        foreach (int pidx in regionAllPaths[r])
+                            if (pidx >= 0 && pidx < absPaths.Count && absPaths[pidx] != null)
+                                g.DrawPath(pen, absPaths[pidx]);
+                    }
+                    else if (isUnionGroup && regionAllPaths[r].Count > 1)
+                    {
+                        // Union 组：每条路径只绘制不被其他路径覆盖的外轮廓部分
+                        foreach (int pidx in regionAllPaths[r])
+                        {
+                            if (pidx < 0 || pidx >= absPaths.Count || absPaths[pidx] == null)
+                                continue;
+                            using (Region otherInterior = new Region())
+                            {
+                                otherInterior.MakeEmpty();
+                                foreach (int otherIdx in regionAllPaths[r])
+                                    if (otherIdx != pidx && otherIdx >= 0 && otherIdx < absPaths.Count && absPaths[otherIdx] != null)
+                                        otherInterior.Union(absPaths[otherIdx]);
+                                GraphicsState state = g.Save();
+                                g.SetClip(otherInterior, CombineMode.Exclude);
+                                g.DrawPath(pen, absPaths[pidx]);
+                                g.Restore(state);
+                            }
+                        }
+                    }
+                    else if (isUnionGroup)
+                    {
+                        foreach (int pidx in regionAllPaths[r])
+                            if (pidx >= 0 && pidx < absPaths.Count && absPaths[pidx] != null)
+                                g.DrawPath(pen, absPaths[pidx]);
+                    }
+                    else
+                    {
+                        // Subtract/Intersect/Xor：裁剪到结果区域后描边
+                        // 对于组内存在 Union 子关系的路径，还需排除 Union 伙伴的内部
+                        foreach (int pidx in regionAllPaths[r])
+                        {
+                            if (pidx < 0 || pidx >= absPaths.Count || absPaths[pidx] == null)
+                                continue;
+
+                            GraphicsState state = g.Save();
+
+                            bool hasUnionPartner = false;
+                            using (Region unionExclude = new Region())
+                            {
+                                unionExclude.MakeEmpty();
+
+                                // 1. 此路径的 BoolOp 为 Union → 排除其目标路径内部
+                                BooleanOperation pathOp = (pidx < boolOps.Count) ? boolOps[pidx] : BooleanOperation.None;
+                                if (pathOp == BooleanOperation.Union)
+                                {
+                                    int targetPathIdx = -1;
+                                    for (int j = pidx + 1; j < absPaths.Count; j++)
+                                    {
+                                        if (absPaths[j] != null) { targetPathIdx = j; break; }
+                                    }
+                                    if (targetPathIdx >= 0 && regionAllPaths[r].Contains(targetPathIdx))
+                                    {
+                                        unionExclude.Union(absPaths[targetPathIdx]);
+                                        hasUnionPartner = true;
+                                    }
+                                }
+
+                                // 2. 组内其他路径的 BoolOp 为 Union 且目标是此路径 → 排除该路径内部
+                                foreach (int otherIdx in regionAllPaths[r])
+                                {
+                                    if (otherIdx == pidx || otherIdx < 0 || otherIdx >= absPaths.Count || absPaths[otherIdx] == null)
+                                        continue;
+                                    BooleanOperation otherOp = (otherIdx < boolOps.Count) ? boolOps[otherIdx] : BooleanOperation.None;
+                                    if (otherOp == BooleanOperation.Union)
+                                    {
+                                        int otherTarget = -1;
+                                        for (int j = otherIdx + 1; j < absPaths.Count; j++)
+                                        {
+                                            if (absPaths[j] != null) { otherTarget = j; break; }
+                                        }
+                                        if (otherTarget == pidx)
+                                        {
+                                            unionExclude.Union(absPaths[otherIdx]);
+                                            hasUnionPartner = true;
+                                        }
+                                    }
+                                }
+
+                                if (hasUnionPartner)
+                                    g.SetClip(unionExclude, CombineMode.Exclude);
+                            }
+
+                            g.SetClip(renderRegions[r], CombineMode.Intersect);
+                            g.DrawPath(pen, absPaths[pidx]);
+                            g.Restore(state);
+                        }
+                    }
+                }
+            }
+
+            // 释放资源
+            foreach (Region r in renderRegions) r.Dispose();
+            foreach (GraphicsPath gp in absPaths) if (gp != null) gp.Dispose();
+        }
+
+        /// <summary>渲染 Zone 区域和顶部信息标注（预览模式和普通模式共用）</summary>
+        private void RenderZonesAndInfo(Graphics g, float canvasW, float canvasH)
+        {
             // 绘制框选矩形
             if (_isBoxSelecting)
             {
@@ -2128,6 +2531,10 @@ namespace DiagramDesigner.Controls
                     ShapeZone z = _zones[_selectedZoneIndex];
                     info = string.Format("区域: {0}  锚定: {1}  (拖拽边角调整宽高, 约束在图形内)", z.Name, z.Anchor);
                 }
+                else if (_chkPreview != null && _chkPreview.Checked)
+                {
+                    info = "[预览模式] 布尔运算结果（取消勾选预览可返回编辑）";
+                }
                 else
                 {
                     BooleanOperation currentOp = (_currentPathIndex < _pathBoolOps.Count)
@@ -2159,6 +2566,10 @@ namespace DiagramDesigner.Controls
                     string shapeInfo = (_currentPathIndex < _pathIsShape.Count && !_pathIsShape[_currentPathIndex]) ? " [线体]" : "";
                     info = string.Format("路径 {0}/{1}   布尔(→下层): {2}{3}{4}", _currentPathIndex + 1, _paths.Count, boolInfo, handleHint, shapeInfo);
                 }
+                // 绘制半透明白色背景，防止文字与图形重叠时不可读
+                SizeF textSize = g.MeasureString(info, font);
+                using (Brush bgBrush = new SolidBrush(Color.FromArgb(200, 255, 255, 255)))
+                    g.FillRectangle(bgBrush, 4, 2, textSize.Width + 4, textSize.Height + 2);
                 g.DrawString(info, font, brush, 6, 4);
             }
         }
