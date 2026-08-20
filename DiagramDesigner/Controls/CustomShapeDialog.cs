@@ -2189,12 +2189,16 @@ namespace DiagramDesigner.Controls
             List<List<int>> regionAllPaths = new List<List<int>>();
             List<List<int>> regionPathRoles = new List<List<int>>();
             List<bool> regionIsModified = new List<bool>();
+            List<bool> regionAllXor = new List<bool>();
+            List<bool> regionAllUnion = new List<bool>();
 
             Region accumulated = null;
             List<int> currentPaths = null;
             List<int> currentRoles = null;
             BooleanOperation pendingOp = BooleanOperation.None;
             bool currentModified = false;
+            bool currentAllXor = true;
+            bool currentAllUnion = true;
 
             for (int i = 0; i < absPaths.Count; i++)
             {
@@ -2213,6 +2217,8 @@ namespace DiagramDesigner.Controls
                     currentRoles = new List<int>(); currentRoles.Add(0);
                     pendingOp = op;
                     currentModified = false;
+                    currentAllXor = true;
+                    currentAllUnion = true;
 
                     if (nextIdx < 0 || op == BooleanOperation.None)
                     {
@@ -2220,6 +2226,8 @@ namespace DiagramDesigner.Controls
                         regionAllPaths.Add(currentPaths);
                         regionPathRoles.Add(currentRoles);
                         regionIsModified.Add(false);
+                        regionAllXor.Add(false);
+                        regionAllUnion.Add(false);
                         accumulated = null;
                     }
                 }
@@ -2230,18 +2238,18 @@ namespace DiagramDesigner.Controls
                     {
                         case BooleanOperation.Union:
                             accumulated.Union(absPaths[i]);
-                            role = 0; break;
+                            role = 0; currentAllXor = false; break;
                         case BooleanOperation.Subtract:
                             accumulated.Exclude(absPaths[i]);
-                            role = 1; break;
+                            role = 1; currentAllXor = false; currentAllUnion = false; break;
                         case BooleanOperation.Intersect:
                             accumulated.Intersect(absPaths[i]);
-                            role = 2; break;
+                            role = 2; currentAllXor = false; currentAllUnion = false; break;
                         case BooleanOperation.Xor:
                             accumulated.Xor(absPaths[i]);
-                            role = 0; break;
+                            role = 0; currentAllUnion = false; break;
                         default:
-                            role = 0; break;
+                            role = 0; currentAllXor = false; currentAllUnion = false; break;
                     }
                     currentModified = true;
                     currentPaths.Add(i);
@@ -2254,6 +2262,8 @@ namespace DiagramDesigner.Controls
                         regionAllPaths.Add(currentPaths);
                         regionPathRoles.Add(currentRoles);
                         regionIsModified.Add(currentModified);
+                        regionAllXor.Add(currentAllXor);
+                        regionAllUnion.Add(currentAllUnion);
                         accumulated = null;
                     }
                 }
@@ -2287,7 +2297,7 @@ namespace DiagramDesigner.Controls
             }
 
             // === 描边 ===
-            // 统一策略：未修改组直接描边原始路径；已修改组用侵蚀环裁剪统一描边
+            // 未修改组直接描边原始路径；已修改组用精确逐路径裁剪统一描边
             using (Pen pen = new Pen(_geomBorderColor, 2f))
             {
                 float erodeDist = 4f; // penWidth=2 → erodeDist = max(2,2)+2 = 4
@@ -2302,15 +2312,11 @@ namespace DiagramDesigner.Controls
                     }
                     else
                     {
-                        // 已修改组：侵蚀环裁剪统一描边
-                        using (Region ring = RegionOutlineTracer.CreateStrokeClipRing(renderRegions[r], erodeDist))
-                        {
-                            g.SetClip(ring, CombineMode.Replace);
-                            foreach (int pidx in regionAllPaths[r])
-                                if (pidx >= 0 && pidx < absPaths.Count && absPaths[pidx] != null)
-                                    g.DrawPath(pen, absPaths[pidx]);
-                            g.ResetClip();
-                        }
+                        // 已修改组：精确逐路径裁剪统一描边
+                        RegionOutlineTracer.StrokeModifiedGroup(
+                            g, pen, erodeDist,
+                            absPaths, regionAllPaths[r], regionPathRoles[r],
+                            renderRegions[r], regionAllUnion[r], regionAllXor[r]);
                     }
                 }
             }
