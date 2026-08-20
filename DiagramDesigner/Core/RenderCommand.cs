@@ -475,111 +475,88 @@ namespace DiagramDesigner.Core
                 absPaths.Add(gp);
             }
 
-            // === 渲染组：每个组包含一个 Region + 构成它的原始路径列表 + 是否被布尔修改 ===
-            // 邻居模式：每条路径的 BoolOp 作用于下方最近的非空路径
-            // 处理方向：自底向上
+            // === 渲染组：自上而下两两计算 ===
+            // 每条路径的 BoolOp 描述如何将累积结果与下方路径组合
+            // Subtract 方向：上层减去下层（累积结果 Exclude 下层路径）
+            // 路径角色：0=Positive(Union/Xor/基底), 1=Negative(Subtract), 2=Constrained(Intersect)
             List<Region> renderRegions = new List<Region>();
-            List<int> regionBasePath = new List<int>();      // 基础（下层）路径索引
-            List<List<int>> regionAllPaths = new List<List<int>>(); // 组内所有路径索引
-            List<bool> regionIsModified = new List<bool>();   // 是否被布尔运算修改
-            // 是否需要 Region 填充（所有多路径布尔运算都需要，单路径 None 不需要）
-            List<bool> regionNeedsRegionFill = new List<bool>();
-            // 组的主要布尔运算类型（用于描边策略选择）
-            List<BooleanOperation> regionOpType = new List<BooleanOperation>();
+            List<List<int>> regionAllPaths = new List<List<int>>();
+            List<List<int>> regionPathRoles = new List<List<int>>();
+            List<bool> regionIsModified = new List<bool>();
 
-            for (int i = absPaths.Count - 1; i >= 0; i--)
+            Region accumulated = null;
+            List<int> currentPaths = null;
+            List<int> currentRoles = null;
+            BooleanOperation pendingOp = BooleanOperation.None;
+            bool currentModified = false;
+
+            for (int i = 0; i < absPaths.Count; i++)
             {
-                if (absPaths[i] == null)
-                    continue;
+                if (absPaths[i] == null) continue;
 
                 BooleanOperation op = defs[i].BoolOp;
 
-                // 最底层有效路径无 BoolOp
-                bool hasLowerPath = false;
+                // 检查下方是否有非空路径
+                int nextIdx = -1;
                 for (int j = i + 1; j < absPaths.Count; j++)
-                {
-                    if (absPaths[j] != null) { hasLowerPath = true; break; }
-                }
-                if (!hasLowerPath)
-                    op = BooleanOperation.None;
+                    if (absPaths[j] != null) { nextIdx = j; break; }
 
-                if (op == BooleanOperation.None)
+                if (accumulated == null)
                 {
-                    // 独立路径：创建新组
-                    renderRegions.Add(new Region(absPaths[i]));
-                    regionBasePath.Add(i);
-                    List<int> paths = new List<int>();
-                    paths.Add(i);
-                    regionAllPaths.Add(paths);
-                    regionIsModified.Add(false);
-                    regionNeedsRegionFill.Add(false);
-                    regionOpType.Add(BooleanOperation.None);
+                    // 开始新组
+                    accumulated = new Region(absPaths[i]);
+                    currentPaths = new List<int>(); currentPaths.Add(i);
+                    currentRoles = new List<int>(); currentRoles.Add(0); // 基底=Positive
+                    pendingOp = op;
+                    currentModified = false;
+
+                    if (nextIdx < 0 || op == BooleanOperation.None)
+                    {
+                        renderRegions.Add(accumulated);
+                        regionAllPaths.Add(currentPaths);
+                        regionPathRoles.Add(currentRoles);
+                        regionIsModified.Add(false);
+                        accumulated = null;
+                    }
                 }
                 else
                 {
-                    // 查找下方最近的非空路径所属的渲染组
-                    int targetPathIdx = -1;
-                    for (int j = i + 1; j < absPaths.Count; j++)
+                    // 用上一条路径的 BoolOp 将累积结果与当前路径组合
+                    int role;
+                    switch (pendingOp)
                     {
-                        if (absPaths[j] != null) { targetPathIdx = j; break; }
+                        case BooleanOperation.Union:
+                            accumulated.Union(absPaths[i]);
+                            role = 0; // Positive
+                            break;
+                        case BooleanOperation.Subtract:
+                            accumulated.Exclude(absPaths[i]); // 上层减下层
+                            role = 1; // Negative
+                            break;
+                        case BooleanOperation.Intersect:
+                            accumulated.Intersect(absPaths[i]);
+                            role = 2; // Constrained
+                            break;
+                        case BooleanOperation.Xor:
+                            accumulated.Xor(absPaths[i]);
+                            role = 0; // Positive
+                            break;
+                        default:
+                            role = 0;
+                            break;
                     }
-                    int targetIdx = -1;
-                    if (targetPathIdx >= 0)
-                    {
-                        // 搜索所有组中的所有路径（不仅是基础路径）
-                        // 修复多层布尔：如 A∩B-C，B 已加入 C 的组后，
-                        // A 查找 B 时需要搜索 regionAllPaths 而非 regionBasePath
-                        for (int r = 0; r < regionAllPaths.Count; r++)
-                        {
-                            foreach (int pidx in regionAllPaths[r])
-                            {
-                                if (pidx == targetPathIdx) { targetIdx = r; break; }
-                            }
-                            if (targetIdx >= 0) break;
-                        }
-                    }
+                    currentModified = true;
+                    currentPaths.Add(i);
+                    currentRoles.Add(role);
+                    pendingOp = op;
 
-                    if (targetIdx >= 0)
+                    if (nextIdx < 0 || op == BooleanOperation.None)
                     {
-                        Region target = renderRegions[targetIdx];
-                        switch (op)
-                        {
-                            case BooleanOperation.Union:
-                                target.Union(absPaths[i]);
-                                // Union 多路径时用 Region 填充以确保重叠区域正确填充
-                                if (regionAllPaths[targetIdx].Count > 0)
-                                    regionNeedsRegionFill[targetIdx] = true;
-                                regionOpType[targetIdx] = BooleanOperation.Union;
-                                break;
-                            case BooleanOperation.Subtract:
-                                target.Exclude(absPaths[i]);
-                                regionNeedsRegionFill[targetIdx] = true;
-                                regionOpType[targetIdx] = BooleanOperation.Subtract;
-                                break;
-                            case BooleanOperation.Intersect:
-                                target.Intersect(absPaths[i]);
-                                regionNeedsRegionFill[targetIdx] = true;
-                                regionOpType[targetIdx] = BooleanOperation.Intersect;
-                                break;
-                            case BooleanOperation.Xor:
-                                target.Xor(absPaths[i]);
-                                regionNeedsRegionFill[targetIdx] = true;
-                                regionOpType[targetIdx] = BooleanOperation.Xor;
-                                break;
-                        }
-                        regionIsModified[targetIdx] = true;
-                        regionAllPaths[targetIdx].Add(i);
-                    }
-                    else
-                    {
-                        renderRegions.Add(new Region(absPaths[i]));
-                        regionBasePath.Add(i);
-                        List<int> paths = new List<int>();
-                        paths.Add(i);
-                        regionAllPaths.Add(paths);
-                        regionIsModified.Add(false);
-                        regionNeedsRegionFill.Add(false);
-                        regionOpType.Add(BooleanOperation.None);
+                        renderRegions.Add(accumulated);
+                        regionAllPaths.Add(currentPaths);
+                        regionPathRoles.Add(currentRoles);
+                        regionIsModified.Add(currentModified);
+                        accumulated = null;
                     }
                 }
             }
@@ -591,28 +568,24 @@ namespace DiagramDesigner.Core
                 {
                     for (int r = 0; r < renderRegions.Count; r++)
                     {
-                        // 跳过非形状（线体）路径的填充
-                        int baseIdx = regionBasePath[r];
-                        if (baseIdx >= 0 && baseIdx < defs.Count && !defs[baseIdx].IsShape)
+                        // 跳过非形状（线体）路径的填充（检查组内首条路径）
+                        int firstIdx = regionAllPaths[r][0];
+                        if (firstIdx >= 0 && firstIdx < defs.Count && !defs[firstIdx].IsShape)
                             continue;
 
-                        if (!regionNeedsRegionFill[r])
+                        if (!regionIsModified[r])
                         {
-                            // 未修改组（单路径 None）：直接用 GraphicsPath 填充
                             using (GraphicsPath combined = new GraphicsPath())
                             {
                                 combined.FillMode = FillMode.Winding;
                                 foreach (int pidx in regionAllPaths[r])
-                                {
                                     if (absPaths[pidx] != null)
                                         combined.AddPath(absPaths[pidx], false);
-                                }
                                 g.FillPath(brush, combined);
                             }
                         }
                         else
                         {
-                            // Union/Subtract/Intersect/Xor 组：用 Region 填充（确保重叠区域正确）
                             g.FillRegion(brush, renderRegions[r]);
                         }
                     }
@@ -620,119 +593,35 @@ namespace DiagramDesigner.Core
             }
 
             // === 描边 ===
+            // 统一策略：未修改组直接描边原始路径；已修改组用侵蚀环裁剪统一描边
             if (_stroke)
             {
                 using (Pen pen = new Pen(stroke, _strokeWidth / scale))
                 {
+                    float penWidth = _strokeWidth / scale;
+                    float erodeDist = Math.Max(penWidth, 2f) + 2f;
+
                     for (int r = 0; r < renderRegions.Count; r++)
                     {
-                        bool isUnionGroup = regionIsModified[r] && regionOpType[r] == BooleanOperation.Union;
-
                         if (!regionIsModified[r])
                         {
-                            // 未修改组（单路径或 None）：直接描边原始路径
+                            // 未修改组：直接描边原始路径
                             foreach (int pidx in regionAllPaths[r])
-                            {
                                 if (pidx >= 0 && pidx < absPaths.Count && absPaths[pidx] != null)
                                     g.DrawPath(pen, absPaths[pidx]);
-                            }
-                        }
-                        else if (isUnionGroup && regionAllPaths[r].Count > 1)
-                        {
-                            // Union 组（多路径）：每条路径只绘制不被其他路径覆盖的外轮廓部分
-                            // 通过裁剪排除其他路径的内部，使并集呈现为统一整体而非拼接
-                            foreach (int pidx in regionAllPaths[r])
-                            {
-                                if (pidx < 0 || pidx >= absPaths.Count || absPaths[pidx] == null)
-                                    continue;
-
-                                // 构建由本组中其他所有路径组成的 Region
-                                using (Region otherInterior = new Region())
-                                {
-                                    otherInterior.MakeEmpty();
-                                    foreach (int otherIdx in regionAllPaths[r])
-                                    {
-                                        if (otherIdx != pidx && otherIdx >= 0 && otherIdx < absPaths.Count && absPaths[otherIdx] != null)
-                                            otherInterior.Union(absPaths[otherIdx]);
-                                    }
-
-                                    // 裁剪到"其他路径内部"的补集，只绘制外轮廓部分
-                                    GraphicsState state = g.Save();
-                                    g.SetClip(otherInterior, CombineMode.Exclude);
-                                    g.DrawPath(pen, absPaths[pidx]);
-                                    g.Restore(state);
-                                }
-                            }
-                        }
-                        else if (isUnionGroup)
-                        {
-                            // Union 组（单路径）：直接描边
-                            foreach (int pidx in regionAllPaths[r])
-                            {
-                                if (pidx >= 0 && pidx < absPaths.Count && absPaths[pidx] != null)
-                                    g.DrawPath(pen, absPaths[pidx]);
-                            }
                         }
                         else
                         {
-                            // Subtract/Intersect/Xor：裁剪到结果区域后描边
-                            // 对于组内存在 Union 子关系的路径，还需排除 Union 伙伴的内部
-                            foreach (int pidx in regionAllPaths[r])
+                            // 已修改组：侵蚀环裁剪统一描边
+                            // 创建边界环形裁剪区域，只绘制外轮廓附近的原始路径段，
+                            // 内部共享边因远离边界被裁掉
+                            using (Region ring = RegionOutlineTracer.CreateStrokeClipRing(renderRegions[r], erodeDist))
                             {
-                                if (pidx < 0 || pidx >= absPaths.Count || absPaths[pidx] == null)
-                                    continue;
-
-                                GraphicsState state = g.Save();
-
-                                // 构建 Union 伙伴排除区域
-                                bool hasUnionPartner = false;
-                                using (Region unionExclude = new Region())
-                                {
-                                    unionExclude.MakeEmpty();
-
-                                    // 1. 此路径的 BoolOp 为 Union → 排除其目标路径内部
-                                    if (defs[pidx].BoolOp == BooleanOperation.Union)
-                                    {
-                                        int targetPathIdx = -1;
-                                        for (int j = pidx + 1; j < absPaths.Count; j++)
-                                        {
-                                            if (absPaths[j] != null) { targetPathIdx = j; break; }
-                                        }
-                                        if (targetPathIdx >= 0 && regionAllPaths[r].Contains(targetPathIdx))
-                                        {
-                                            unionExclude.Union(absPaths[targetPathIdx]);
-                                            hasUnionPartner = true;
-                                        }
-                                    }
-
-                                    // 2. 组内其他路径的 BoolOp 为 Union 且目标是此路径 → 排除该路径内部
-                                    foreach (int otherIdx in regionAllPaths[r])
-                                    {
-                                        if (otherIdx == pidx || otherIdx < 0 || otherIdx >= absPaths.Count || absPaths[otherIdx] == null)
-                                            continue;
-                                        if (defs[otherIdx].BoolOp == BooleanOperation.Union)
-                                        {
-                                            int otherTarget = -1;
-                                            for (int j = otherIdx + 1; j < absPaths.Count; j++)
-                                            {
-                                                if (absPaths[j] != null) { otherTarget = j; break; }
-                                            }
-                                            if (otherTarget == pidx)
-                                            {
-                                                unionExclude.Union(absPaths[otherIdx]);
-                                                hasUnionPartner = true;
-                                            }
-                                        }
-                                    }
-
-                                    if (hasUnionPartner)
-                                        g.SetClip(unionExclude, CombineMode.Exclude);
-                                }
-
-                                // 裁剪到结果区域（与当前裁剪区域取交集）
-                                g.SetClip(renderRegions[r], CombineMode.Intersect);
-                                g.DrawPath(pen, absPaths[pidx]);
-                                g.Restore(state);
+                                g.SetClip(ring, CombineMode.Replace);
+                                foreach (int pidx in regionAllPaths[r])
+                                    if (pidx >= 0 && pidx < absPaths.Count && absPaths[pidx] != null)
+                                        g.DrawPath(pen, absPaths[pidx]);
+                                g.ResetClip();
                             }
                         }
                     }
