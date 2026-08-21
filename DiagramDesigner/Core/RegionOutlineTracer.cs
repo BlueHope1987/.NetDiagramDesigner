@@ -199,22 +199,24 @@ namespace DiagramDesigner.Core
         }
 
         // ====================================================================
-        // 方案B：精确逐路径裁剪描边（纯角色驱动）
+        // 精确逐路径裁剪描边（R_without_k 方案）
         // ====================================================================
 
         /// <summary>
         /// 对已修改组进行精确逐路径裁剪描边。
-        /// 纯运算组（所有运算类型相同）用精确裁剪，裁剪边界恰好经过路径交汇点，不留线头。
-        /// 混合运算组（如 Subtract+Union、Xor+Union）用内裁剪环 R\erode(R,d)，
-        /// 直接用最终 Region 确定边界，不依赖运算类型推断。
+        /// 统一算法：对每条路径 P_k，重放布尔链（跳过 P_k）得到 R_without_k，
+        /// 再用 R 和 R_without_k 的差集精确确定 P_k 的可见边界。
+        /// - 正向路径(Union/基底): clip = R \ R_without_k（P_k 贡献的新区域）
+        /// - 负向路径(Subtract/Intersect): clip = R_without_k \ R（P_k 移除的区域）
+        /// - Xor 路径: clip = R XOR R_without_k（P_k 切换的区域）
+        /// 纯 Xor 组(allXor)时全部路径完整描边（每条边都是结果边界）。
         /// </summary>
         public static void StrokeModifiedGroup(
             Graphics g, Pen pen, float erodeDist,
             List<GraphicsPath> allPaths,
             List<int> groupPathIndices,
-            List<int> groupRoles,
+            List<BooleanOperation> groupOps,
             Region groupRegion,
-            bool allUnion,
             bool allXor)
         {
             int count = groupPathIndices.Count;
@@ -227,152 +229,73 @@ namespace DiagramDesigner.Core
                 return;
             }
 
-            // 统计角色类型
-            bool hasRole0 = false, hasRole1 = false, hasRole2 = false;
-            for (int k = 0; k < groupRoles.Count; k++)
-            {
-                if (groupRoles[k] == 0) hasRole0 = true;
-                else if (groupRoles[k] == 1) hasRole1 = true;
-                else if (groupRoles[k] == 2) hasRole2 = true;
-            }
-
-            // 检查是否只有首条路径为 role 0（纯 Subtract/Intersect 的必要条件）
-            bool onlyFirstIsRole0 = groupRoles.Count > 0 && groupRoles[0] == 0;
-            for (int k = 1; k < groupRoles.Count; k++)
-                if (groupRoles[k] == 0) onlyFirstIsRole0 = false;
-
-            // === Xor：全部路径完整描边（外轮廓+孔洞边界） ===
-            if (allXor && hasRole0 && !hasRole1 && !hasRole2)
+            // 纯 Xor：全部路径完整描边（外轮廓+孔洞边界）
+            if (allXor)
             {
                 for (int k = 0; k < count; k++)
                     DrawPathSafe(g, pen, allPaths, groupPathIndices[k]);
                 return;
             }
 
-            // === 纯 Union：每条路径描边在"其余路径并集"之外的部分 ===
-            if (allUnion && hasRole0 && !hasRole1 && !hasRole2)
+            // 通用精确裁剪：逐路径计算 R_without_k
+            // 膨胀量 = 半个笔宽，确保笔触中心线在 clip 边界上时完整笔宽被渲染
+            float halfPenWidth = pen.Width / 2f;
+
+            for (int k = 0; k < count; k++)
             {
-                for (int k = 0; k < count; k++)
-                {
-                    GraphicsState state = g.Save();
-                    Region others = BuildUnionExcept(allPaths, groupPathIndices, k);
-                    if (others != null)
-                    {
-                        g.SetClip(others, CombineMode.Exclude);
-                        others.Dispose();
-                    }
-                    DrawPathSafe(g, pen, allPaths, groupPathIndices[k]);
-                    g.Restore(state);
-                }
-                return;
-            }
+                int idx = groupPathIndices[k];
+                if (idx < 0 || idx >= allPaths.Count || allPaths[idx] == null)
+                    continue;
 
-            // === 纯 Subtract (role 0 + role 1，只有首条为 role 0)：基底并集被减去路径切割 ===
-            if (hasRole0 && hasRole1 && !hasRole2 && onlyFirstIsRole0)
-            {
-                Region baseUnion = BuildUnionByRole(allPaths, groupPathIndices, groupRoles, 0);
+                // 重放布尔链（跳过 P_k）得到 R_without_k
+                Region rWithoutK = ReplayChainExcept(allPaths, groupPathIndices, groupOps, k);
 
-                for (int k = 0; k < count; k++)
-                {
-                    int idx = groupPathIndices[k];
-                    if (idx < 0 || idx >= allPaths.Count || allPaths[idx] == null) continue;
-
-                    GraphicsState state = g.Save();
-
-                    if (groupRoles[k] == 0)
-                    {
-                        // 基底路径：描边在"所有其余路径并集"之外
-                        // （其余基底=并集重叠，减去路径=切割孔）
-                        Region others = BuildUnionExcept(allPaths, groupPathIndices, k);
-                        if (others != null)
-                        {
-                            g.SetClip(others, CombineMode.Exclude);
-                            others.Dispose();
-                        }
-                    }
-                    else
-                    {
-                        // 减去路径：描边在"基底并集"内、"其余减去路径并集"外
-                        // （形成切割孔的边界）
-                        if (baseUnion != null)
-                            g.SetClip(baseUnion, CombineMode.Replace);
-                        Region otherNegs = BuildUnionExceptByRole(allPaths, groupPathIndices, groupRoles, 1, k);
-                        if (otherNegs != null)
-                        {
-                            g.SetClip(otherNegs, CombineMode.Exclude);
-                            otherNegs.Dispose();
-                        }
-                    }
-
-                    g.DrawPath(pen, allPaths[idx]);
-                    g.Restore(state);
-                }
-
-                if (baseUnion != null) baseUnion.Dispose();
-                return;
-            }
-
-            // === 纯 Intersect (role 0 + role 2，只有首条为 role 0)：基底并集与约束路径求交 ===
-            if (hasRole0 && !hasRole1 && hasRole2 && onlyFirstIsRole0)
-            {
-                Region baseUnion = BuildUnionByRole(allPaths, groupPathIndices, groupRoles, 0);
-                Region constrIntersect = BuildIntersectByRole(allPaths, groupPathIndices, groupRoles, 2);
-
-                for (int k = 0; k < count; k++)
-                {
-                    int idx = groupPathIndices[k];
-                    if (idx < 0 || idx >= allPaths.Count || allPaths[idx] == null) continue;
-
-                    GraphicsState state = g.Save();
-
-                    if (groupRoles[k] == 0)
-                    {
-                        // 基底路径：描边在"约束交集"内、"其余基底并集"外
-                        if (constrIntersect != null)
-                            g.SetClip(constrIntersect, CombineMode.Replace);
-                        Region otherBases = BuildUnionExceptByRole(allPaths, groupPathIndices, groupRoles, 0, k);
-                        if (otherBases != null)
-                        {
-                            g.SetClip(otherBases, CombineMode.Exclude);
-                            otherBases.Dispose();
-                        }
-                    }
-                    else
-                    {
-                        // 约束路径：描边在"基底并集"内、"其余约束交集"内
-                        if (baseUnion != null)
-                            g.SetClip(baseUnion, CombineMode.Replace);
-                        Region otherConstr = BuildIntersectExceptByRole(allPaths, groupPathIndices, groupRoles, 2, k);
-                        if (otherConstr != null)
-                        {
-                            g.SetClip(otherConstr, CombineMode.Intersect);
-                            otherConstr.Dispose();
-                        }
-                    }
-
-                    g.DrawPath(pen, allPaths[idx]);
-                    g.Restore(state);
-                }
-
-                if (baseUnion != null) baseUnion.Dispose();
-                if (constrIntersect != null) constrIntersect.Dispose();
-                return;
-            }
-
-            // === 混合运算组：用内裁剪环 R\erode(R,d) 统一描边 ===
-            // 直接用最终 Region 确定边界，不依赖运算类型推断
-            using (Region innerClip = CreateInnerStrokeClip(groupRegion, erodeDist))
-            {
                 GraphicsState state = g.Save();
-                g.SetClip(innerClip, CombineMode.Replace);
-                for (int k = 0; k < count; k++)
-                    DrawPathSafe(g, pen, allPaths, groupPathIndices[k]);
+
+                BooleanOperation op = groupOps[k];
+                if (op == BooleanOperation.Subtract || op == BooleanOperation.Intersect)
+                {
+                    // 负向路径：clip = R_without_k \ R（P_k 移除的区域，即孔洞边界）
+                    Region clip = rWithoutK.Clone();
+                    clip.Exclude(groupRegion);
+                    Region dilated = Dilate(clip, halfPenWidth);
+                    clip.Dispose();
+                    g.SetClip(dilated, CombineMode.Replace);
+                    dilated.Dispose();
+                }
+                else if (op == BooleanOperation.Xor)
+                {
+                    // Xor 路径：clip = R XOR R_without_k（P_k 切换的区域）
+                    Region clip1 = groupRegion.Clone();
+                    clip1.Exclude(rWithoutK);
+                    Region clip2 = rWithoutK.Clone();
+                    clip2.Exclude(groupRegion);
+                    clip1.Union(clip2);
+                    clip2.Dispose();
+                    Region dilated = Dilate(clip1, halfPenWidth);
+                    clip1.Dispose();
+                    g.SetClip(dilated, CombineMode.Replace);
+                    dilated.Dispose();
+                }
+                else
+                {
+                    // 正向路径(Union/基底)：clip = R \ R_without_k（P_k 贡献的新区域）
+                    Region clip = groupRegion.Clone();
+                    clip.Exclude(rWithoutK);
+                    Region dilated = Dilate(clip, halfPenWidth);
+                    clip.Dispose();
+                    g.SetClip(dilated, CombineMode.Replace);
+                    dilated.Dispose();
+                }
+
+                g.DrawPath(pen, allPaths[idx]);
                 g.Restore(state);
+                rWithoutK.Dispose();
             }
         }
 
         // ====================================================================
-        // 方案B 辅助方法
+        // R_without_k 辅助方法
         // ====================================================================
 
         private static void DrawPathSafe(Graphics g, Pen pen, List<GraphicsPath> allPaths, int idx)
@@ -381,89 +304,100 @@ namespace DiagramDesigner.Core
                 g.DrawPath(pen, allPaths[idx]);
         }
 
-        /// <summary>构建组内除第 exceptK 条外所有路径的并集 Region</summary>
-        private static Region BuildUnionExcept(List<GraphicsPath> allPaths, List<int> indices, int exceptK)
+        /// <summary>
+        /// 膨胀 Region：8方向平移后求并集，扩展区域边界。
+        /// 用于 clip 膨胀，确保笔触中心线在 clip 边界上时完整笔宽被渲染。
+        /// </summary>
+        private static Region Dilate(Region region, float distance)
         {
-            Region result = null;
-            for (int m = 0; m < indices.Count; m++)
+            if (distance <= 0f)
+                return region.Clone();
+
+            float[] offsets = {
+                distance, 0f,           // 右
+                -distance, 0f,         // 左
+                0f, distance,          // 下
+                0f, -distance,         // 上
+                distance, distance,    // 右下
+                distance, -distance,   // 右上
+                -distance, distance,    // 左下
+                -distance, -distance   // 左上
+            };
+
+            Region result = region.Clone();
+            for (int i = 0; i < offsets.Length; i += 2)
             {
-                if (m == exceptK) continue;
-                int idx = indices[m];
-                if (idx < 0 || idx >= allPaths.Count || allPaths[idx] == null) continue;
-                if (result == null)
-                    result = new Region(allPaths[idx]);
-                else
-                    result.Union(allPaths[idx]);
+                using (Matrix m = new Matrix(1f, 0f, 0f, 1f, offsets[i], offsets[i + 1]))
+                {
+                    Region temp = region.Clone();
+                    temp.Transform(m);
+                    result.Union(temp);
+                    temp.Dispose();
+                }
             }
             return result;
         }
 
-        /// <summary>构建组内指定角色的所有路径的并集 Region</summary>
-        private static Region BuildUnionByRole(List<GraphicsPath> allPaths, List<int> indices, List<int> roles, int role)
+        /// <summary>
+        /// 重放布尔链（跳过第 exceptK 条路径），返回不包含该路径的累积 Region。
+        /// 首条路径为基底（直接创建 Region）；若基底被跳过，后续路径从空开始：
+        /// Union/Xor 与空 = 路径本身，Subtract/Intersect 与空 = 空。
+        /// </summary>
+        private static Region ReplayChainExcept(
+            List<GraphicsPath> allPaths,
+            List<int> indices,
+            List<BooleanOperation> ops,
+            int exceptK)
         {
             Region result = null;
-            for (int m = 0; m < indices.Count; m++)
-            {
-                if (roles[m] != role) continue;
-                int idx = indices[m];
-                if (idx < 0 || idx >= allPaths.Count || allPaths[idx] == null) continue;
-                if (result == null)
-                    result = new Region(allPaths[idx]);
-                else
-                    result.Union(allPaths[idx]);
-            }
-            return result;
-        }
 
-        /// <summary>构建组内指定角色、除第 exceptK 条外所有路径的并集 Region</summary>
-        private static Region BuildUnionExceptByRole(List<GraphicsPath> allPaths, List<int> indices, List<int> roles, int role, int exceptK)
-        {
-            Region result = null;
-            for (int m = 0; m < indices.Count; m++)
+            for (int j = 0; j < indices.Count; j++)
             {
-                if (m == exceptK) continue;
-                if (roles[m] != role) continue;
-                int idx = indices[m];
-                if (idx < 0 || idx >= allPaths.Count || allPaths[idx] == null) continue;
-                if (result == null)
-                    result = new Region(allPaths[idx]);
-                else
-                    result.Union(allPaths[idx]);
-            }
-            return result;
-        }
+                if (j == exceptK) continue;
 
-        /// <summary>构建组内指定角色的所有路径的交集 Region</summary>
-        private static Region BuildIntersectByRole(List<GraphicsPath> allPaths, List<int> indices, List<int> roles, int role)
-        {
-            Region result = null;
-            for (int m = 0; m < indices.Count; m++)
-            {
-                if (roles[m] != role) continue;
-                int idx = indices[m];
+                int idx = indices[j];
                 if (idx < 0 || idx >= allPaths.Count || allPaths[idx] == null) continue;
-                if (result == null)
-                    result = new Region(allPaths[idx]);
-                else
-                    result.Intersect(allPaths[idx]);
-            }
-            return result;
-        }
 
-        /// <summary>构建组内指定角色、除第 exceptK 条外所有路径的交集 Region</summary>
-        private static Region BuildIntersectExceptByRole(List<GraphicsPath> allPaths, List<int> indices, List<int> roles, int role, int exceptK)
-        {
-            Region result = null;
-            for (int m = 0; m < indices.Count; m++)
-            {
-                if (m == exceptK) continue;
-                if (roles[m] != role) continue;
-                int idx = indices[m];
-                if (idx < 0 || idx >= allPaths.Count || allPaths[idx] == null) continue;
+                BooleanOperation op = ops[j];
+
                 if (result == null)
-                    result = new Region(allPaths[idx]);
+                {
+                    // 无累积区域：基底直接创建，Union/Xor 与空=路径本身，Subtract/Intersect 与空=空
+                    if (op == BooleanOperation.None ||
+                        op == BooleanOperation.Union ||
+                        op == BooleanOperation.Xor)
+                    {
+                        result = new Region(allPaths[idx]);
+                    }
+                    // Subtract/Intersect 与空 = 空，跳过
+                }
                 else
-                    result.Intersect(allPaths[idx]);
+                {
+                    switch (op)
+                    {
+                        case BooleanOperation.None:
+                        case BooleanOperation.Union:
+                            result.Union(allPaths[idx]);
+                            break;
+                        case BooleanOperation.Subtract:
+                            result.Exclude(allPaths[idx]);
+                            break;
+                        case BooleanOperation.Intersect:
+                            result.Intersect(allPaths[idx]);
+                            break;
+                        case BooleanOperation.Xor:
+                            result.Xor(allPaths[idx]);
+                            break;
+                    }
+                }
+            }
+
+            if (result == null)
+            {
+                // new Region() 创建的是无限大区域，不是空区域！
+                // 必须显式创建空区域，否则 R \ infinite = empty 会导致基底路径描边全部丢失
+                result = new Region();
+                result.MakeEmpty();
             }
             return result;
         }

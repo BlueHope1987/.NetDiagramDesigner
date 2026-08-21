@@ -2187,18 +2187,16 @@ namespace DiagramDesigner.Controls
             // 路径角色：0=Positive(Union/Xor/基底), 1=Negative(Subtract), 2=Constrained(Intersect)
             List<Region> renderRegions = new List<Region>();
             List<List<int>> regionAllPaths = new List<List<int>>();
-            List<List<int>> regionPathRoles = new List<List<int>>();
+            List<List<BooleanOperation>> regionOps = new List<List<BooleanOperation>>();
             List<bool> regionIsModified = new List<bool>();
             List<bool> regionAllXor = new List<bool>();
-            List<bool> regionAllUnion = new List<bool>();
 
             Region accumulated = null;
             List<int> currentPaths = null;
-            List<int> currentRoles = null;
+            List<BooleanOperation> currentOps = null;
             BooleanOperation pendingOp = BooleanOperation.None;
             bool currentModified = false;
             bool currentAllXor = true;
-            bool currentAllUnion = true;
 
             for (int i = 0; i < absPaths.Count; i++)
             {
@@ -2214,56 +2212,52 @@ namespace DiagramDesigner.Controls
                 {
                     accumulated = new Region(absPaths[i]);
                     currentPaths = new List<int>(); currentPaths.Add(i);
-                    currentRoles = new List<int>(); currentRoles.Add(0);
+                    currentOps = new List<BooleanOperation>(); currentOps.Add(BooleanOperation.None);
                     pendingOp = op;
                     currentModified = false;
                     currentAllXor = true;
-                    currentAllUnion = true;
 
                     if (nextIdx < 0 || op == BooleanOperation.None)
                     {
                         renderRegions.Add(accumulated);
                         regionAllPaths.Add(currentPaths);
-                        regionPathRoles.Add(currentRoles);
+                        regionOps.Add(currentOps);
                         regionIsModified.Add(false);
                         regionAllXor.Add(false);
-                        regionAllUnion.Add(false);
                         accumulated = null;
                     }
                 }
                 else
                 {
-                    int role;
                     switch (pendingOp)
                     {
                         case BooleanOperation.Union:
                             accumulated.Union(absPaths[i]);
-                            role = 0; currentAllXor = false; break;
+                            currentAllXor = false; break;
                         case BooleanOperation.Subtract:
                             accumulated.Exclude(absPaths[i]);
-                            role = 1; currentAllXor = false; currentAllUnion = false; break;
+                            currentAllXor = false; break;
                         case BooleanOperation.Intersect:
                             accumulated.Intersect(absPaths[i]);
-                            role = 2; currentAllXor = false; currentAllUnion = false; break;
+                            currentAllXor = false; break;
                         case BooleanOperation.Xor:
                             accumulated.Xor(absPaths[i]);
-                            role = 0; currentAllUnion = false; break;
+                            break;
                         default:
-                            role = 0; currentAllXor = false; currentAllUnion = false; break;
+                            currentAllXor = false; break;
                     }
                     currentModified = true;
                     currentPaths.Add(i);
-                    currentRoles.Add(role);
+                    currentOps.Add(pendingOp);
                     pendingOp = op;
 
                     if (nextIdx < 0 || op == BooleanOperation.None)
                     {
                         renderRegions.Add(accumulated);
                         regionAllPaths.Add(currentPaths);
-                        regionPathRoles.Add(currentRoles);
+                        regionOps.Add(currentOps);
                         regionIsModified.Add(currentModified);
                         regionAllXor.Add(currentAllXor);
-                        regionAllUnion.Add(currentAllUnion);
                         accumulated = null;
                     }
                 }
@@ -2315,8 +2309,8 @@ namespace DiagramDesigner.Controls
                         // 已修改组：精确逐路径裁剪统一描边
                         RegionOutlineTracer.StrokeModifiedGroup(
                             g, pen, erodeDist,
-                            absPaths, regionAllPaths[r], regionPathRoles[r],
-                            renderRegions[r], regionAllUnion[r], regionAllXor[r]);
+                            absPaths, regionAllPaths[r], regionOps[r],
+                            renderRegions[r], regionAllXor[r]);
                     }
                 }
             }
