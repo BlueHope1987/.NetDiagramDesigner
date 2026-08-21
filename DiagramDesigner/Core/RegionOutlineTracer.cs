@@ -252,41 +252,19 @@ namespace DiagramDesigner.Core
 
                 GraphicsState state = g.Save();
 
-                BooleanOperation op = groupOps[k];
-                if (op == BooleanOperation.Subtract || op == BooleanOperation.Intersect)
-                {
-                    // 负向路径：clip = R_without_k \ R（P_k 移除的区域，即孔洞边界）
-                    Region clip = rWithoutK.Clone();
-                    clip.Exclude(groupRegion);
-                    Region dilated = Dilate(clip, halfPenWidth);
-                    clip.Dispose();
-                    g.SetClip(dilated, CombineMode.Replace);
-                    dilated.Dispose();
-                }
-                else if (op == BooleanOperation.Xor)
-                {
-                    // Xor 路径：clip = R XOR R_without_k（P_k 切换的区域）
-                    Region clip1 = groupRegion.Clone();
-                    clip1.Exclude(rWithoutK);
-                    Region clip2 = rWithoutK.Clone();
-                    clip2.Exclude(groupRegion);
-                    clip1.Union(clip2);
-                    clip2.Dispose();
-                    Region dilated = Dilate(clip1, halfPenWidth);
-                    clip1.Dispose();
-                    g.SetClip(dilated, CombineMode.Replace);
-                    dilated.Dispose();
-                }
-                else
-                {
-                    // 正向路径(Union/基底)：clip = R \ R_without_k（P_k 贡献的新区域）
-                    Region clip = groupRegion.Clone();
-                    clip.Exclude(rWithoutK);
-                    Region dilated = Dilate(clip, halfPenWidth);
-                    clip.Dispose();
-                    g.SetClip(dilated, CombineMode.Replace);
-                    dilated.Dispose();
-                }
+                // 统一使用对称差集 clip = R XOR R_without_k
+                // 纯运算下某一边必然为空，结果与分支逻辑完全一致
+                // 混合 Xor 下两边都非空，正确捕获孔洞边界（修复漏边）
+                Region clip1 = groupRegion.Clone();
+                clip1.Exclude(rWithoutK);
+                Region clip2 = rWithoutK.Clone();
+                clip2.Exclude(groupRegion);
+                clip1.Union(clip2);
+                clip2.Dispose();
+                Region dilated = Dilate(clip1, halfPenWidth);
+                clip1.Dispose();
+                g.SetClip(dilated, CombineMode.Replace);
+                dilated.Dispose();
 
                 g.DrawPath(pen, allPaths[idx]);
                 g.Restore(state);

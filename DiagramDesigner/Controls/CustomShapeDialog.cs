@@ -536,6 +536,8 @@ namespace DiagramDesigner.Controls
             {
                 _pathBoolOps[_currentPathIndex] = op;
                 UpdateBoolOpButtonText();
+                // 运算类型变更后同步刷新按钮 tooltip（更新配对中的运算符号）
+                UpdateBoolOpButtonTooltips();
                 _canvasPanel.Invalidate();
             }
         }
@@ -563,6 +565,60 @@ namespace DiagramDesigner.Controls
                 if (mi != null)
                     mi.Checked = (i == idx);
             }
+        }
+
+        /// <summary>获取布尔运算类型的显示符号（None→"B"，其余为运算符）</summary>
+        private static string GetBoolOpSymbol(BooleanOperation op)
+        {
+            switch (op)
+            {
+                case BooleanOperation.Union: return "∪";
+                case BooleanOperation.Subtract: return "−";
+                case BooleanOperation.Intersect: return "∩";
+                case BooleanOperation.Xor: return "⊕";
+                default: return "B";
+            }
+        }
+
+        /// <summary>
+        /// 更新布尔运算/合并按钮的状态提示文字（tooltip）。
+        /// 有下方有效路径时显示运算配对（如“布尔: 路径2 ∪ 路径3”）；
+        /// 位于最底层（无下方有效路径）时显示“下方无形状可运算”。
+        /// </summary>
+        private void UpdateBoolOpButtonTooltips()
+        {
+            if (_btnBoolOp == null || _btnMergePaths == null)
+                return;
+
+            bool isZone = (_selectedZoneIndex >= 0);
+            bool hasLower = !isZone && HasLowerValidPath();
+
+            if (!hasLower)
+            {
+                // 当前路径位于最底层，下方无形状可参与运算
+                toolTip1.SetToolTip(_btnBoolOp, "下方无形状可运算");
+                toolTip1.SetToolTip(_btnMergePaths, "下方无形状可运算");
+                return;
+            }
+
+            int lowerIdx = GetLowerValidPathIndex();
+            if (lowerIdx < 0)
+            {
+                toolTip1.SetToolTip(_btnBoolOp, "下方无形状可运算");
+                toolTip1.SetToolTip(_btnMergePaths, "下方无形状可运算");
+                return;
+            }
+
+            BooleanOperation op = (_currentPathIndex >= 0 && _currentPathIndex < _pathBoolOps.Count)
+                ? _pathBoolOps[_currentPathIndex] : BooleanOperation.None;
+            string opSymbol = GetBoolOpSymbol(op);
+            // 路径序号按 1-based 显示（与画布信息“路径 N/M”一致）
+            string boolTip = string.Format("布尔: 路径{0} {1} 路径{2}",
+                _currentPathIndex + 1, opSymbol, lowerIdx + 1);
+            string mergeTip = string.Format("合并: 路径{0} {1} 路径{2} → 单一形状",
+                _currentPathIndex + 1, opSymbol, lowerIdx + 1);
+            toolTip1.SetToolTip(_btnBoolOp, boolTip);
+            toolTip1.SetToolTip(_btnMergePaths, mergeTip);
         }
 
         /// <summary>
@@ -646,6 +702,7 @@ namespace DiagramDesigner.Controls
 
             // 优先尝试曲线感知合并
             List<CurveVertex> mergedPath = null;
+            List<List<CurveVertex>> mergeHoles = null;
             List<List<CurveVertex>> mergePaths = new List<List<CurveVertex>>();
             mergePaths.Add(currentPath);
             mergePaths.Add(lowerPath);
@@ -657,9 +714,10 @@ namespace DiagramDesigner.Controls
             {
                 mergedPath = CurveAwareMerge.Merge(
                     mergePaths, mergeOps, resultRegion,
-                    minX - 10, minY - 10, maxX + 10, maxY + 10);
+                    minX - 10, minY - 10, maxX + 10, maxY + 10,
+                    out mergeHoles);
             }
-            catch { mergedPath = null; }
+            catch { mergedPath = null; mergeHoles = null; }
 
             // 回退位图追踪
             if (mergedPath == null || mergedPath.Count < 3)
@@ -705,6 +763,17 @@ namespace DiagramDesigner.Controls
                 _paths.Insert(_currentPathIndex, mergedPath);
                 _pathBoolOps.Insert(_currentPathIndex, inheritedOp);
                 _pathIsShape.Insert(_currentPathIndex, true);
+
+                // 插入孔洞路径（作为 Subtract 路径放在外轮廓下方）
+                if (mergeHoles != null)
+                {
+                    for (int h = mergeHoles.Count - 1; h >= 0; h--)
+                    {
+                        _paths.Insert(_currentPathIndex + 1, mergeHoles[h]);
+                        _pathBoolOps.Insert(_currentPathIndex + 1, BooleanOperation.Subtract);
+                        _pathIsShape.Insert(_currentPathIndex + 1, true);
+                    }
+                }
             }
 
             _selectedVertices.Clear();
@@ -3329,11 +3398,18 @@ namespace DiagramDesigner.Controls
             _btnEditZoneTB.Enabled = isZone;
             _btnDeleteZoneTB.Enabled = isZone;
             // 布尔运算按钮：路径模式启用，当前路径有下方非空路径时才有意义
-            _btnBoolOp.Enabled = !isZone && HasLowerValidPath();
+            bool hasLower = !isZone && HasLowerValidPath();
+            _btnBoolOp.Enabled = hasLower;
             // 合并按钮：当前路径有下方非空路径时启用
-            _btnMergePaths.Enabled = !isZone && HasLowerValidPath();
+            _btnMergePaths.Enabled = hasLower;
             if (!isZone)
+            {
                 UpdateBoolOpButtonText();
+                // 更新布尔/合并按钮的状态提示（tooltip）：
+                //   有下方有效路径时显示运算配对（如“布尔: 路径2 ∪ 路径3”）；
+                //   位于最底层时显示“下方无形状可运算”。
+                UpdateBoolOpButtonTooltips();
+            }
 
             // 同步 _pathIsShape 列表
             SyncPathIsShapeList();
@@ -3368,17 +3444,23 @@ namespace DiagramDesigner.Controls
             return count;
         }
 
-        /// <summary>检查当前路径下方是否存在非空有效路径</summary>
-        private bool HasLowerValidPath()
+        /// <summary>获取当前路径下方第一个有效路径的索引（顶点数 >= 3），不存在返回 -1</summary>
+        private int GetLowerValidPathIndex()
         {
             if (_currentPathIndex < 0 || _currentPathIndex >= _paths.Count)
-                return false;
+                return -1;
             for (int j = _currentPathIndex + 1; j < _paths.Count; j++)
             {
                 if (_paths[j] != null && _paths[j].Count >= 3)
-                    return true;
+                    return j;
             }
-            return false;
+            return -1;
+        }
+
+        /// <summary>检查当前路径下方是否存在非空有效路径</summary>
+        private bool HasLowerValidPath()
+        {
+            return GetLowerValidPathIndex() >= 0;
         }
 
         #endregion
