@@ -22,6 +22,9 @@ namespace DiagramDesigner.Core
         private PointF[] _handleIns = null;   // 进边控制点偏移（归一化坐标）
         private PointF[] _handleOuts = null;  // 出边控制点偏移（归一化坐标）
 
+        // 复合路径子图标记（与 _points 等长，null 表示无子图分割）
+        private bool[] _isNewFigure = null;
+
         /// <summary>路径顶点数组（归一化坐标 0~1）</summary>
         public PointF[] Points
         {
@@ -71,6 +74,25 @@ namespace DiagramDesigner.Core
             set { _handleOuts = value; }
         }
 
+        /// <summary>复合路径子图标记数组（null 表示无子图分割）。
+        /// true 表示该顶点是新子图（Figure）的起始点，用于孔洞等复合形状。</summary>
+        public bool[] IsNewFigures
+        {
+            get { return _isNewFigure; }
+            set { _isNewFigure = value; }
+        }
+
+        /// <summary>是否为复合路径（含子图分割标记）</summary>
+        public bool IsCompound
+        {
+            get
+            {
+                if (_isNewFigure == null) return false;
+                foreach (bool b in _isNewFigure) if (b) return true;
+                return false;
+            }
+        }
+
         /// <summary>是否有曲线句柄数据</summary>
         public bool HasCurves
         {
@@ -109,14 +131,19 @@ namespace DiagramDesigner.Core
                 _handleIns = new PointF[n];
                 _handleOuts = new PointF[n];
                 bool hasHandles = false;
+                bool hasFigures = false;
+                _isNewFigure = new bool[n];
                 for (int i = 0; i < n; i++)
                 {
                     _points[i] = vertices[i].Position;
                     _handleTypes[i] = vertices[i].Handle;
                     _handleIns[i] = vertices[i].HandleIn;
                     _handleOuts[i] = vertices[i].HandleOut;
+                    _isNewFigure[i] = vertices[i].IsNewFigure;
                     if (vertices[i].Handle != HandleType.None)
                         hasHandles = true;
+                    if (vertices[i].IsNewFigure)
+                        hasFigures = true;
                 }
                 if (!hasHandles)
                 {
@@ -124,6 +151,8 @@ namespace DiagramDesigner.Core
                     _handleIns = null;
                     _handleOuts = null;
                 }
+                if (!hasFigures)
+                    _isNewFigure = null;
             }
             _boolOp = boolOp;
         }
@@ -147,6 +176,8 @@ namespace DiagramDesigner.Core
                 clone._handleIns = (PointF[])_handleIns.Clone();
                 clone._handleOuts = (PointF[])_handleOuts.Clone();
             }
+            if (_isNewFigure != null)
+                clone._isNewFigure = (bool[])_isNewFigure.Clone();
             return clone;
         }
 
@@ -197,7 +228,8 @@ namespace DiagramDesigner.Core
                 HandleType ht = (_handleTypes != null && i < _handleTypes.Length) ? _handleTypes[i] : HandleType.None;
                 PointF hi = (_handleIns != null && i < _handleIns.Length) ? _handleIns[i] : PointF.Empty;
                 PointF ho = (_handleOuts != null && i < _handleOuts.Length) ? _handleOuts[i] : PointF.Empty;
-                result.Add(new CurveVertex(_points[i], ht, hi, ho));
+                bool newFig = (_isNewFigure != null && i < _isNewFigure.Length) ? _isNewFigure[i] : false;
+                result.Add(new CurveVertex(_points[i], ht, hi, ho, newFig));
             }
             return result;
         }

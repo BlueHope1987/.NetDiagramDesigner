@@ -29,6 +29,7 @@ namespace DiagramDesigner.Core
         private HandleType _handle = HandleType.None;
         private PointF _handleIn = PointF.Empty;   // 进边控制点偏移
         private PointF _handleOut = PointF.Empty;  // 出边控制点偏移
+        private bool _isNewFigure = false;          // 是否为复合路径中新子图的起始顶点
 
         public PointF Position
         {
@@ -66,6 +67,15 @@ namespace DiagramDesigner.Core
             }
         }
 
+        /// <summary>是否为复合路径中新子图（Figure）的起始顶点。
+        /// true 表示此处开始一个新的子路径（用于孔洞等复合形状）。
+        /// 渲染时遇到此标记调用 GraphicsPath.StartFigure()。</summary>
+        public bool IsNewFigure
+        {
+            get { return _isNewFigure; }
+            set { _isNewFigure = value; }
+        }
+
         public CurveVertex() { }
 
         public CurveVertex(PointF position)
@@ -79,6 +89,15 @@ namespace DiagramDesigner.Core
             _handle = handle;
             _handleIn = handleIn;
             _handleOut = handleOut;
+        }
+
+        public CurveVertex(PointF position, HandleType handle, PointF handleIn, PointF handleOut, bool isNewFigure)
+        {
+            _position = position;
+            _handle = handle;
+            _handleIn = handleIn;
+            _handleOut = handleOut;
+            _isNewFigure = isNewFigure;
         }
 
         /// <summary>从 PointF 隐式转换（默认无句柄）</summary>
@@ -162,7 +181,7 @@ namespace DiagramDesigner.Core
 
         public CurveVertex Clone()
         {
-            return new CurveVertex(_position, _handle, _handleIn, _handleOut);
+            return new CurveVertex(_position, _handle, _handleIn, _handleOut, _isNewFigure);
         }
 
         public PointF ToPointF()

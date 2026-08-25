@@ -375,7 +375,88 @@ namespace DiagramDesigner.Core
         /// <summary>
         /// 从归一化顶点和句柄数据构建含贝塞尔曲线的 GraphicsPath。
         /// 每条边：若两端均无句柄则用直线，否则用三次贝塞尔曲线。
+        /// 支持复合路径：isNewFigures 数组标记子图起始顶点，遇到 true 时调用 StartFigure()。
         /// </summary>
+        public static GraphicsPath BuildCurveGraphicsPath(PointF[] normPoints, RectangleF rect,
+            HandleType[] handleTypes, PointF[] handleIns, PointF[] handleOuts, bool closed,
+            bool[] isNewFigures)
+        {
+            GraphicsPath gp = new GraphicsPath();
+            gp.FillMode = FillMode.Winding;
+            int n = normPoints.Length;
+            if (n < 2) return gp;
+
+            // 检测是否为复合路径
+            bool hasFigures = false;
+            if (isNewFigures != null)
+            {
+                for (int i = 0; i < n && i < isNewFigures.Length; i++)
+                    if (isNewFigures[i]) { hasFigures = true; break; }
+            }
+
+            if (!hasFigures)
+            {
+                // 普通单图路径
+                return BuildCurveGraphicsPath(normPoints, rect, handleTypes, handleIns, handleOuts, closed);
+            }
+
+            // 复合路径：按 IsNewFigure 分割为多个子图
+            // 计算绝对坐标顶点
+            PointF[] absPts = new PointF[n];
+            for (int i = 0; i < n; i++)
+                absPts[i] = new PointF(
+                    rect.X + normPoints[i].X * rect.Width,
+                    rect.Y + normPoints[i].Y * rect.Height);
+
+            // 收集各子图的起止索引
+            List<int> figStarts = new List<int>();
+            figStarts.Add(0);
+            for (int i = 1; i < n; i++)
+                if (i < isNewFigures.Length && isNewFigures[i])
+                    figStarts.Add(i);
+
+            for (int fig = 0; fig < figStarts.Count; fig++)
+            {
+                int start = figStarts[fig];
+                int end = (fig + 1 < figStarts.Count) ? figStarts[fig + 1] : n;
+                int figN = end - start;
+
+                if (figN < 2) continue;
+                if (fig > 0) gp.StartFigure();
+
+                int edgeCount = closed ? figN : figN - 1;
+                for (int i = 0; i < edgeCount; i++)
+                {
+                    int idx = start + i;
+                    int nextIdx = start + ((i + 1) % figN);
+                    PointF p1 = absPts[idx];
+                    PointF p2 = absPts[nextIdx];
+
+                    bool hasOut = handleTypes != null && idx < handleTypes.Length && handleTypes[idx] != HandleType.None;
+                    bool hasIn = handleTypes != null && nextIdx < handleTypes.Length && handleTypes[nextIdx] != HandleType.None;
+
+                    if (!hasOut && !hasIn)
+                    {
+                        gp.AddLine(p1, p2);
+                    }
+                    else
+                    {
+                        PointF cp1 = hasOut
+                            ? new PointF(p1.X + handleOuts[idx].X * rect.Width, p1.Y + handleOuts[idx].Y * rect.Height)
+                            : p1;
+                        PointF cp2 = hasIn
+                            ? new PointF(p2.X + handleIns[nextIdx].X * rect.Width, p2.Y + handleIns[nextIdx].Y * rect.Height)
+                            : p2;
+                        gp.AddBezier(p1, cp1, cp2, p2);
+                    }
+                }
+                if (closed) gp.CloseFigure();
+            }
+
+            return gp;
+        }
+
+        /// <summary>旧版重载（无复合路径标记）</summary>
         public static GraphicsPath BuildCurveGraphicsPath(PointF[] normPoints, RectangleF rect,
             HandleType[] handleTypes, PointF[] handleIns, PointF[] handleOuts, bool closed)
         {
@@ -447,10 +528,11 @@ namespace DiagramDesigner.Core
                     continue;
                 }
                 GraphicsPath gp;
-                if (def.HasCurves)
+                if (def.HasCurves || def.IsCompound)
                 {
                     gp = BuildCurveGraphicsPath(def.Points, rect,
-                        def.HandleTypes, def.HandleIns, def.HandleOuts, def.IsShape);
+                        def.HandleTypes, def.HandleIns, def.HandleOuts, def.IsShape,
+                        def.IsNewFigures);
                 }
                 else
                 {

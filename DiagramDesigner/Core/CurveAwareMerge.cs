@@ -5,14 +5,20 @@ using System.Drawing;
 namespace DiagramDesigner.Core
 {
     /// <summary>
-    /// 曲线感知的布尔合并工具（轻量可靠版）。
+    /// 曲线感知的布尔合并工具（精确版）。
     /// 保留原始顶点的贝塞尔句柄；仅在交点处生成新句柄，
     /// 新句柄直接取自原始曲线在该参数处的子段控制点，从而无损保留曲率。
-    /// 边界判定直接使用 Region.IsVisible(PointF)，不分配位图。
-    /// 支持多环结果（外轮廓 + 孔洞）。
+    /// 
+    /// 边界判定使用精确的"点在路径内"测试（射线法 + 曲线扁平化），
+    /// 按布尔运算语义直接计算，不依赖 Region 像素栅格化，
+    /// 因此曲线脚点稳定、孔洞可检测、多区域全部保留。
+    /// 
+    /// 支持多外轮廓输出 + 孔洞。
     /// </summary>
     public static class CurveAwareMerge
     {
+        /// <summary>诊断信息：记录上次 Merge 调用的执行状态，供调用方排查问题</summary>
+        public static string LastDebugInfo = "";
         private struct BezierSeg
         {
             public PointF P0, C1, C2, P3;
@@ -68,33 +74,54 @@ namespace DiagramDesigner.Core
             public override bool Equals(object o) { PointKey k = (PointKey)o; return X == k.X && Y == k.Y; }
         }
 
+        // 路径的扁平表示（用于 PIP 测试）
+        private class FlatPath
+        {
+            public PointF[] Points; // 闭合多边形点序列（首尾不重复）
+        }
+
         // ====================================================================
         // 公开方法
         // ====================================================================
 
         /// <summary>
-        /// 执行曲线感知的布尔合并。返回外轮廓 CurveVertex 列表（含贝塞尔句柄）；
-        /// 孔洞通过 holes 参数返回。无法处理时返回 null（调用方回退到位图追踪）。
+        /// 执行曲线感知的布尔合并。
+        /// 返回所有外轮廓列表（每个外轮廓为 CurveVertex 列表，含贝塞尔句柄）。
+        /// 孔洞通过 holes 参数返回（与外轮廓一一对应：holes[i] 是 outers[i] 的孔洞列表）。
+        /// 无法处理时返回 null（调用方回退到位图追踪）。
         /// </summary>
-        public static List<CurveVertex> Merge(
+        public static List<List<CurveVertex>> Merge(
             List<List<CurveVertex>> paths,
             List<BooleanOperation> boolOps,
-            Region resultRegion,
+            object resultRegion, // 保留参数兼容性，内部不再使用
             float boundsMinX, float boundsMinY,
             float boundsMaxX, float boundsMaxY,
-            out List<List<CurveVertex>> holes)
+            out List<List<List<CurveVertex>>> holes)
         {
-            holes = new List<List<CurveVertex>>();
+            holes = new List<List<List<CurveVertex>>>();
+            LastDebugInfo = "Merge started. ";
+
+            if (paths == null || paths.Count < 2) { LastDebugInfo += "FAIL: paths<2. "; return null; }
+            LastDebugInfo += "paths=" + paths.Count + ". ";
+
+            // Step 0: 预扁平化所有路径（用于精确 PIP 测试）
+            FlatPath[] flatPaths = new FlatPath[paths.Count];
+            for (int i = 0; i < paths.Count; i++)
+            {
+                if (paths[i] == null || paths[i].Count < 3) { LastDebugInfo += "FAIL: path[" + i + "] invalid. "; return null; }
+                flatPaths[i] = FlattenPath(paths[i]);
+            }
+            LastDebugInfo += "flatPaths ok. ";
 
             // Step 1: 由原始顶点构建边（含扁平采样）
             List<Edge> allEdges = new List<Edge>();
             for (int i = 0; i < paths.Count; i++)
             {
-                if (paths[i] == null || paths[i].Count < 3) continue;
                 List<Edge> pe = BuildEdges(paths[i], i);
                 if (pe != null) allEdges.AddRange(pe);
             }
-            if (allEdges.Count < 3) return null;
+            if (allEdges.Count < 3) { LastDebugInfo += "FAIL: edges<3. "; return null; }
+            LastDebugInfo += "edges=" + allEdges.Count + ". ";
 
             // Step 2: 查找不同路径间的所有交点（映射回原始参数）
             List<Crossing> crossings = new List<Crossing>();
@@ -102,46 +129,245 @@ namespace DiagramDesigner.Core
                 for (int j = i + 1; j < allEdges.Count; j++)
                     if (allEdges[i].PathIndex != allEdges[j].PathIndex)
                         FindIntersections(allEdges[i], i, allEdges[j], j, crossings);
-            if (crossings.Count == 0) return null; // 无交点 → 回退位图追踪
+            LastDebugInfo += "crossings=" + crossings.Count + ". ";
 
             // Step 3: 在交点处分割边，生成精确子段
             List<SubEdge> allSubEdges = new List<SubEdge>();
             SplitEdgesAtCrossings(allEdges, crossings, allSubEdges);
-            if (allSubEdges.Count == 0) return null;
+            if (allSubEdges.Count == 0) { LastDebugInfo += "FAIL: subEdges=0. "; return null; }
+            LastDebugInfo += "subEdges=" + allSubEdges.Count + ". ";
 
-            // Step 4: 边界测试（用曲线切线方向计算垂直测试点）
+            // Step 4: 边界测试 —— 用精确 PIP + 布尔运算语义
             for (int i = 0; i < allSubEdges.Count; i++)
-                allSubEdges[i].IsBoundary = TestBoundary(allSubEdges[i], resultRegion);
+                allSubEdges[i].IsBoundary = TestBoundaryByPIP(allSubEdges[i], flatPaths, boolOps);
 
             List<SubEdge> boundary = new List<SubEdge>();
             foreach (SubEdge se in allSubEdges) if (se.IsBoundary) boundary.Add(se);
-            if (boundary.Count < 3) return null;
+            if (boundary.Count < 3) { LastDebugInfo += "FAIL: boundary<3 (count=" + boundary.Count + "). "; return null; }
+            LastDebugInfo += "boundary=" + boundary.Count + ". ";
 
-            // Step 5: 链接所有边界子边为闭合环（外轮廓 + 孔洞）
+            // Step 5: 链接所有边界子边为闭合环
             List<List<SubEdge>> loops = ChainAllLoops(boundary);
-            if (loops.Count == 0) return null;
+            if (loops.Count == 0) { LastDebugInfo += "FAIL: loops=0. "; return null; }
+            LastDebugInfo += "loops=" + loops.Count + ". ";
 
-            // Step 6: 按面积区分外轮廓与孔洞
-            int outerIdx = 0;
-            float maxArea = 0;
-            for (int i = 0; i < loops.Count; i++)
+            // Step 6: 分类所有环 —— 区分外轮廓与孔洞，建立嵌套关系
+            List<int> outerLoopIndices;
+            List<List<int>> holeIndicesPerOuter;
+            ClassifyLoops(loops, flatPaths, boolOps, out outerLoopIndices, out holeIndicesPerOuter);
+
+            if (outerLoopIndices == null || outerLoopIndices.Count == 0) { LastDebugInfo += "FAIL: no outers. "; return null; }
+            LastDebugInfo += "outers=" + outerLoopIndices.Count + ". ";
+
+            // Step 7: 转换为 CurveVertex
+            List<List<CurveVertex>> result = new List<List<CurveVertex>>();
+            for (int o = 0; o < outerLoopIndices.Count; o++)
             {
-                float area = Math.Abs(SignedArea(loops[i]));
-                if (area > maxArea) { maxArea = area; outerIdx = i; }
+                List<CurveVertex> outer = CreateVertices(loops[outerLoopIndices[o]]);
+                if (outer == null || outer.Count < 3) continue;
+                result.Add(outer);
+
+                List<List<CurveVertex>> holeList = new List<List<CurveVertex>>();
+                if (holeIndicesPerOuter != null && o < holeIndicesPerOuter.Count)
+                {
+                    foreach (int hi in holeIndicesPerOuter[o])
+                    {
+                        List<CurveVertex> holeVerts = CreateVertices(loops[hi]);
+                        if (holeVerts != null && holeVerts.Count >= 3)
+                            holeList.Add(holeVerts);
+                    }
+                }
+                holes.Add(holeList);
             }
 
-            List<CurveVertex> outer = CreateVertices(loops[outerIdx]);
-            if (outer == null || outer.Count < 3) return null;
+            if (result.Count == 0) { LastDebugInfo += "FAIL: result=0. "; return null; }
+            LastDebugInfo += "SUCCESS outers=" + result.Count + " holes=" + holes.Count + ". ";
+            return result;
+        }
 
-            for (int i = 0; i < loops.Count; i++)
+        // ====================================================================
+        // 路径扁平化（用于 PIP 测试）
+        // ====================================================================
+
+        private static FlatPath FlattenPath(List<CurveVertex> verts)
+        {
+            FlatPath fp = new FlatPath();
+            List<PointF> pts = new List<PointF>();
+            int n = verts.Count;
+
+            for (int i = 0; i < n; i++)
             {
-                if (i == outerIdx) continue;
-                List<CurveVertex> holeVerts = CreateVertices(loops[i]);
-                if (holeVerts != null && holeVerts.Count >= 3)
-                    holes.Add(holeVerts);
+                int next = (i + 1) % n;
+                CurveVertex v1 = verts[i];
+                CurveVertex v2 = verts[next];
+                bool isCurve = v1.Handle != HandleType.None || v2.Handle != HandleType.None;
+
+                if (!isCurve)
+                {
+                    if (pts.Count == 0 || Dist(pts[pts.Count - 1], v1.Position) > 0.01f)
+                        pts.Add(v1.Position);
+                }
+                else
+                {
+                    PointF c1 = (v1.Handle != HandleType.None) ? v1.GetHandleOutAbs() : v1.Position;
+                    PointF c2 = (v2.Handle != HandleType.None) ? v2.GetHandleInAbs() : v2.Position;
+                    BezierSeg bez = new BezierSeg(v1.Position, c1, c2, v2.Position);
+                    List<PointF> segPts = new List<PointF>();
+                    FlattenBezierSimple(bez, segPts, 0);
+                    // 去掉重复的起点（与上一段终点重合）
+                    for (int k = 0; k < segPts.Count; k++)
+                    {
+                        if (pts.Count > 0 && Dist(pts[pts.Count - 1], segPts[k]) < 0.01f) continue;
+                        pts.Add(segPts[k]);
+                    }
+                }
             }
 
-            return outer;
+            // 去掉末尾与开头重复的点
+            if (pts.Count > 1 && Dist(pts[0], pts[pts.Count - 1]) < 0.5f)
+                pts.RemoveAt(pts.Count - 1);
+
+            fp.Points = pts.ToArray();
+            return fp;
+        }
+
+        private static void FlattenBezierSimple(BezierSeg bez, List<PointF> pts, int depth)
+        {
+            float d1 = PointToLineDist(bez.C1, bez.P0, bez.P3);
+            float d2 = PointToLineDist(bez.C2, bez.P0, bez.P3);
+            float chord = Dist(bez.P0, bez.P3);
+            // 更高精度：0.1px 偏差
+            bool flat = depth > 16 || (d1 < 0.1f && d2 < 0.1f) || chord < 0.5f;
+            if (flat)
+            {
+                if (pts.Count == 0 || Dist(pts[pts.Count - 1], bez.P0) > 0.01f)
+                    pts.Add(bez.P0);
+                if (Dist(pts[pts.Count - 1], bez.P3) > 0.01f)
+                    pts.Add(bez.P3);
+                return;
+            }
+            SplitResult sr = DeCasteljauSplit(bez, 0.5f);
+            FlattenBezierSimple(sr.Left, pts, depth + 1);
+            FlattenBezierSimple(sr.Right, pts, depth + 1);
+        }
+
+        // ====================================================================
+        // 点在路径内测试（射线法）
+        // ====================================================================
+
+        private static bool PointInPath(PointF p, FlatPath path)
+        {
+            PointF[] poly = path.Points;
+            int n = poly.Length;
+            if (n < 3) return false;
+
+            // 射线法：从 p 向右发射水平射线，统计与多边形边的交点数
+            // 奇数 = 在内，偶数 = 在外
+            bool inside = false;
+            for (int i = 0, j = n - 1; i < n; j = i++)
+            {
+                PointF pi = poly[i];
+                PointF pj = poly[j];
+
+                // 检查边是否与水平射线相交
+                // 边的两个端点必须在射线的上下两侧
+                if ((pi.Y > p.Y) != (pj.Y > p.Y))
+                {
+                    // 计算交点的 x 坐标
+                    float xIntersect = (pj.X - pi.X) * (p.Y - pi.Y) / (pj.Y - pi.Y) + pi.X;
+                    if (p.X < xIntersect)
+                        inside = !inside;
+                }
+            }
+            return inside;
+        }
+
+        // ====================================================================
+        // 按布尔运算语义计算点是否在结果内
+        // ====================================================================
+
+        /// <summary>
+        /// 计算点 p 在布尔运算结果的内部还是外部。
+        /// 运算链：从下往上（最后一个路径为基底，前面依次应用运算）。
+        /// 对于两路径：result = path[0] op[0] path[1]
+        ///   即：以 path[1] 为基础，path[0] 用 op[0] 组合上去
+        /// 注意：根据调用方，path[0] 是上层，path[1] 是下层
+        ///   Union: 上层 ∪ 下层 → in0 || in1
+        ///   Subtract: 上层 - 下层 → in0 && !in1
+        ///   Intersect: 上层 ∩ 下层 → in0 && in1
+        ///   Xor: 上层 ⊕ 下层 → in0 != in1
+        /// </summary>
+        private static bool EvalBoolean(PointF p, FlatPath[] flatPaths, List<BooleanOperation> boolOps)
+        {
+            if (flatPaths == null || flatPaths.Length == 0) return false;
+
+            // 先计算每个路径的包含状态
+            bool[] inside = new bool[flatPaths.Length];
+            for (int i = 0; i < flatPaths.Length; i++)
+                inside[i] = PointInPath(p, flatPaths[i]);
+
+            // 两路径情况（最常见）
+            if (flatPaths.Length == 2)
+            {
+                bool in0 = inside[0]; // 上层
+                bool in1 = inside[1]; // 下层
+                BooleanOperation op = boolOps[0]; // 上层的运算
+
+                switch (op)
+                {
+                    case BooleanOperation.Union:
+                        return in0 || in1;
+                    case BooleanOperation.Subtract:
+                        return in0 && !in1;
+                    case BooleanOperation.Intersect:
+                        return in0 && in1;
+                    case BooleanOperation.Xor:
+                        return in0 != in1;
+                    default:
+                        return in0 || in1;
+                }
+            }
+
+            // 多路径：从下往上累积
+            bool result = inside[flatPaths.Length - 1]; // 最底层
+            for (int i = flatPaths.Length - 2; i >= 0; i--)
+            {
+                BooleanOperation op = boolOps[i];
+                bool cur = inside[i];
+                switch (op)
+                {
+                    case BooleanOperation.Union:
+                        result = result || cur;
+                        break;
+                    case BooleanOperation.Subtract:
+                        // 注意：i 是上层，对下层做减法 → 上层 - 下层累积
+                        // 但累积顺序是从下往上，所以这里需要重新考虑
+                        // 对于链 A op1 B op2 C，实际是 (A op1 B) op2 C
+                        // 即上面的对下面的结果做运算
+                        result = ApplyOp(cur, result, op);
+                        break;
+                    case BooleanOperation.Intersect:
+                        result = result && cur;
+                        break;
+                    case BooleanOperation.Xor:
+                        result = result != cur;
+                        break;
+                }
+            }
+            return result;
+        }
+
+        // upperOp lower：上层对下层做运算
+        private static bool ApplyOp(bool upper, bool lower, BooleanOperation op)
+        {
+            switch (op)
+            {
+                case BooleanOperation.Union: return upper || lower;
+                case BooleanOperation.Subtract: return upper && !lower;
+                case BooleanOperation.Intersect: return upper && lower;
+                case BooleanOperation.Xor: return upper != lower;
+                default: return upper || lower;
+            }
         }
 
         // ====================================================================
@@ -369,15 +595,15 @@ namespace DiagramDesigner.Core
         }
 
         // ====================================================================
-        // Step 4: 边界测试
+        // Step 4: 边界测试（PIP + 布尔语义版）
         // ====================================================================
 
         /// <summary>
         /// 测试子边是否在结果边界上。
-        /// 关键修复：曲线边用中点(t=0.5)处的切线方向计算垂直测试点，
-        /// 而非弦方向（P0→P3），避免曲率较大时误判。
+        /// 取子边中点两侧的点（法向偏移），用精确 PIP + 布尔语义计算内外状态。
+        /// 如果两侧状态不同，则该边在边界上。
         /// </summary>
-        private static bool TestBoundary(SubEdge se, Region resultRegion)
+        private static bool TestBoundaryByPIP(SubEdge se, FlatPath[] flatPaths, List<BooleanOperation> boolOps)
         {
             PointF mid;
             float dx, dy;
@@ -399,21 +625,24 @@ namespace DiagramDesigner.Core
 
             float len = (float)Math.Sqrt(dx * dx + dy * dy);
             if (len < 0.001f) return false;
-            float px = -dy / len, py = dx / len; // 垂直方向
+            float px = -dy / len, py = dx / len; // 垂直方向（左手系法线）
 
             // 用多个偏移距离测试以提高可靠性
+            // 使用较小的偏移（0.5px, 1px, 2px）以避免跨过附近的边
             for (int i = 0; i < 3; i++)
             {
                 float off;
                 switch (i)
                 {
-                    case 0: off = 1.0f; break;
-                    case 1: off = 2.0f; break;
-                    default: off = 4.0f; break;
+                    case 0: off = 0.5f; break;
+                    case 1: off = 1.0f; break;
+                    default: off = 2.0f; break;
                 }
                 PointF left = new PointF(mid.X + px * off, mid.Y + py * off);
                 PointF right = new PointF(mid.X - px * off, mid.Y - py * off);
-                if (resultRegion.IsVisible(left) != resultRegion.IsVisible(right)) return true;
+                bool inLeft = EvalBoolean(left, flatPaths, boolOps);
+                bool inRight = EvalBoolean(right, flatPaths, boolOps);
+                if (inLeft != inRight) return true;
             }
             return false;
         }
@@ -524,7 +753,138 @@ namespace DiagramDesigner.Core
         }
 
         // ====================================================================
-        // Step 6: 创建 CurveVertex 列表
+        // Step 6: 环分类 —— 区分外轮廓与孔洞
+        // ====================================================================
+
+        /// <summary>
+        /// 分类所有环：哪些是外轮廓，哪些是孔洞，以及孔洞属于哪个外轮廓。
+        /// 算法：
+        /// 1. 计算每个环的有向面积，正向（逆时针）= 外轮廓候选，负向 = 孔洞候选
+        /// 2. 用点包含测试确定嵌套关系：孔洞在哪个外轮廓内
+        /// 3. 处理多层嵌套（岛中洞）：奇数层为外，偶数层为洞
+        /// </summary>
+        private static void ClassifyLoops(List<List<SubEdge>> loops,
+            FlatPath[] flatPaths, List<BooleanOperation> boolOps,
+            out List<int> outerIndices, out List<List<int>> holeIndicesPerOuter)
+        {
+            int n = loops.Count;
+            float[] areas = new float[n];
+            PointF[] repPoints = new PointF[n]; // 环代表点（边界顶点，用于包含测试）
+
+            for (int i = 0; i < n; i++)
+            {
+                areas[i] = SignedArea(loops[i]);
+                repPoints[i] = GetLoopRepresentativePoint(loops[i]);
+            }
+
+            // 构建每个环的扁平多边形（用于环之间的包含测试）
+            FlatPath[] loopPaths = new FlatPath[n];
+            for (int i = 0; i < n; i++)
+                loopPaths[i] = FlattenLoop(loops[i]);
+
+            // 计算每个环被多少其他环包含（包含计数）
+            // 用边界顶点测试：环 i 的边界顶点是否在环 j 内部
+            int[] containmentLevel = new int[n];
+            for (int i = 0; i < n; i++)
+            {
+                for (int j = 0; j < n; j++)
+                {
+                    if (i == j) continue;
+                    if (PointInPath(repPoints[i], loopPaths[j]))
+                        containmentLevel[i]++;
+                }
+            }
+
+            // 偶数层（0, 2, 4...）= 外轮廓，奇数层（1, 3, 5...）= 孔洞
+            // 边界顶点法可靠：大环边界点不在小环内 → 层级 0 → 外轮廓
+            //                  小环边界点在大环内 → 层级 1 → 孔洞
+            outerIndices = new List<int>();
+            List<int> holeIndices = new List<int>();
+            for (int i = 0; i < n; i++)
+            {
+                if (containmentLevel[i] % 2 == 0)
+                    outerIndices.Add(i);
+                else
+                    holeIndices.Add(i);
+            }
+
+            // 为每个外轮廓分配它的孔洞
+            holeIndicesPerOuter = new List<List<int>>();
+            for (int o = 0; o < outerIndices.Count; o++)
+            {
+                List<int> holesForThis = new List<int>();
+                int outerIdx = outerIndices[o];
+
+                foreach (int hi in holeIndices)
+                {
+                    // 孔洞必须在此外轮廓内
+                    if (!PointInPath(repPoints[hi], loopPaths[outerIdx]))
+                        continue;
+
+                    // 且中间没有其他外轮廓（即这个孔洞直接属于此外轮廓）
+                    bool hasIntermediateOuter = false;
+                    for (int k = 0; k < outerIndices.Count; k++)
+                    {
+                        if (k == o) continue;
+                        int otherOuter = outerIndices[k];
+                        if (PointInPath(repPoints[hi], loopPaths[otherOuter]) &&
+                            PointInPath(repPoints[otherOuter], loopPaths[outerIdx]))
+                        {
+                            hasIntermediateOuter = true;
+                            break;
+                        }
+                    }
+                    if (!hasIntermediateOuter)
+                        holesForThis.Add(hi);
+                }
+                holeIndicesPerOuter.Add(holesForThis);
+            }
+        }
+
+        // 获取环的代表点（用于包含测试）
+        // 关键：用边界顶点而非重心。对于同心圆（A 包含 B），重心都接近圆心，
+        // 导致两者重心都落在对方内部 → 全被误判为孔洞 → 无外轮廓 → 返回 null。
+        // 边界顶点只在自己所属环上：大环边界点不在小环内 → 外轮廓；
+        // 小环边界点在大环内 → 孔洞。判断正确。
+        private static PointF GetLoopRepresentativePoint(List<SubEdge> loop)
+        {
+            if (loop == null || loop.Count == 0) return PointF.Empty;
+            // 用第一条边的起点（边界顶点）
+            return loop[0].NodeStart;
+        }
+
+        // 将环扁平化为多边形
+        private static FlatPath FlattenLoop(List<SubEdge> loop)
+        {
+            FlatPath fp = new FlatPath();
+            List<PointF> pts = new List<PointF>();
+            foreach (SubEdge se in loop)
+            {
+                if (!se.IsCurve)
+                {
+                    if (pts.Count == 0 || Dist(pts[pts.Count - 1], se.NodeStart) > 0.01f)
+                        pts.Add(se.NodeStart);
+                }
+                else
+                {
+                    List<PointF> segPts = new List<PointF>();
+                    FlattenBezierSimple(se.Seg, segPts, 0);
+                    for (int k = 0; k < segPts.Count; k++)
+                    {
+                        if (pts.Count > 0 && Dist(pts[pts.Count - 1], segPts[k]) < 0.01f) continue;
+                        pts.Add(segPts[k]);
+                    }
+                }
+            }
+            // 去重首尾
+            if (pts.Count > 1 && Dist(pts[0], pts[pts.Count - 1]) < 0.5f)
+                pts.RemoveAt(pts.Count - 1);
+            fp.Points = pts.ToArray();
+            return fp;
+        }
+
+        // ====================================================================
+        // Step 7: 创建 CurveVertex 列表
         // ====================================================================
 
         private static List<CurveVertex> CreateVertices(List<SubEdge> chained)
@@ -550,7 +910,7 @@ namespace DiagramDesigner.Core
         }
 
         // ====================================================================
-        // 辅助：有向面积（用于区分外轮廓与孔洞）
+        // 辅助：有向面积
         // ====================================================================
 
         private static float SignedArea(List<SubEdge> loop)

@@ -628,11 +628,19 @@ namespace DiagramDesigner.Controls
         /// </summary>
         private void OnMergePaths(object sender, EventArgs e)
         {
+            System.Diagnostics.Debug.WriteLine("[Merge] OnMergePaths called, currentPathIdx=" + _currentPathIndex + ", pathsCount=" + _paths.Count);
+
             if (_currentPathIndex < 0 || _currentPathIndex >= _paths.Count)
+            {
+                System.Diagnostics.Debug.WriteLine("[Merge] early return: invalid currentPathIndex");
                 return;
+            }
             List<CurveVertex> currentPath = _paths[_currentPathIndex];
             if (currentPath == null || currentPath.Count < 3)
+            {
+                System.Diagnostics.Debug.WriteLine("[Merge] early return: currentPath invalid (count=" + (currentPath != null ? currentPath.Count : -1) + ")");
                 return;
+            }
 
             // 查找紧邻下方的非空路径
             int lowerIdx = -1;
@@ -645,7 +653,12 @@ namespace DiagramDesigner.Controls
                 }
             }
             if (lowerIdx < 0)
+            {
+                System.Diagnostics.Debug.WriteLine("[Merge] early return: no lower path found");
                 return;
+            }
+
+            System.Diagnostics.Debug.WriteLine("[Merge] currentPath vertices=" + currentPath.Count + ", lowerPath idx=" + lowerIdx + " vertices=" + _paths[lowerIdx].Count);
 
             List<CurveVertex> lowerPath = _paths[lowerIdx];
 
@@ -700,9 +713,9 @@ namespace DiagramDesigner.Controls
                     break;
             }
 
-            // 优先尝试曲线感知合并
-            List<CurveVertex> mergedPath = null;
-            List<List<CurveVertex>> mergeHoles = null;
+            // 优先尝试曲线感知合并（精确 PIP 版，支持多外轮廓+孔洞）
+            List<List<CurveVertex>> mergedOuters = null;
+            List<List<List<CurveVertex>>> mergedHolesPerOuter = null;
             List<List<CurveVertex>> mergePaths = new List<List<CurveVertex>>();
             mergePaths.Add(currentPath);
             mergePaths.Add(lowerPath);
@@ -710,32 +723,57 @@ namespace DiagramDesigner.Controls
             mergeOps.Add(op);
             mergeOps.Add(BooleanOperation.None);
 
+            string mergeError = "";
             try
             {
-                mergedPath = CurveAwareMerge.Merge(
-                    mergePaths, mergeOps, resultRegion,
+                mergedOuters = CurveAwareMerge.Merge(
+                    mergePaths, mergeOps, (object)resultRegion,
                     minX - 10, minY - 10, maxX + 10, maxY + 10,
-                    out mergeHoles);
+                    out mergedHolesPerOuter);
             }
-            catch { mergedPath = null; mergeHoles = null; }
+            catch (Exception ex) { mergedOuters = null; mergedHolesPerOuter = null; mergeError = "Exception: " + ex.Message; }
 
-            // 回退位图追踪
-            if (mergedPath == null || mergedPath.Count < 3)
+            System.Diagnostics.Debug.WriteLine("[Merge] CurveAwareMerge result: " +
+                (mergedOuters != null ? mergedOuters.Count + " outers" : "null") +
+                ", diag: " + CurveAwareMerge.LastDebugInfo +
+                (mergeError.Length > 0 ? ", error: " + mergeError : ""));
+
+            // 回退位图追踪（仅单外轮廓，无曲线保留）
+            if (mergedOuters == null || mergedOuters.Count == 0)
             {
+                // 诊断：显示失败原因
+                string diag = mergeError;
+                if (string.IsNullOrEmpty(diag))
+                    diag = CurveAwareMerge.LastDebugInfo;
+                if (string.IsNullOrEmpty(diag))
+                    diag = "unknown";
+
                 List<PointF> outline = null;
+                string fallbackError = "";
                 try
                 {
                     List<Region> regions = new List<Region>();
                     regions.Add(resultRegion);
                     outline = TraceRegionOutline(regions, minX - 10, minY - 10, maxX + 10, maxY + 10);
                 }
-                catch { }
+                catch (Exception ex2) { fallbackError = ex2.Message; }
 
                 if (outline != null && outline.Count >= 3)
                 {
-                    mergedPath = new List<CurveVertex>();
+                    List<CurveVertex> fallbackPath = new List<CurveVertex>();
                     foreach (PointF p in outline)
-                        mergedPath.Add(new CurveVertex(p));
+                        fallbackPath.Add(new CurveVertex(p));
+                    mergedOuters = new List<List<CurveVertex>>();
+                    mergedOuters.Add(fallbackPath);
+                    mergedHolesPerOuter = new List<List<List<CurveVertex>>>();
+                    mergedHolesPerOuter.Add(new List<List<CurveVertex>>());
+                    System.Diagnostics.Debug.WriteLine("[Merge] Fallback (bitmap trace) succeeded: " + outline.Count + " points. CurveAwareMerge failed: " + diag);
+                }
+                else
+                {
+                    // 回退也失败，显示诊断信息
+                    string msg = "合并失败。\nCurveAwareMerge: " + diag + "\nFallback error: " + fallbackError;
+                    System.Windows.Forms.MessageBox.Show(msg, "合并诊断", System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Warning);
                 }
             }
 
@@ -744,36 +782,118 @@ namespace DiagramDesigner.Controls
             upperGp.Dispose();
             lowerGp.Dispose();
 
-            if (mergedPath != null && mergedPath.Count >= 3)
+            try
+            {
+            if (mergedOuters != null && mergedOuters.Count > 0)
             {
                 // 保存下层路径的 BoolOp：合并后的路径继承它，以保持与更下方路径的运算链
                 BooleanOperation inheritedOp = (lowerIdx < _pathBoolOps.Count)
                     ? _pathBoolOps[lowerIdx] : BooleanOperation.None;
 
+                int pathsBefore = _paths.Count;
+
                 // 从高索引到低索引移除两条路径
                 _paths.RemoveAt(lowerIdx);
-                _pathBoolOps.RemoveAt(lowerIdx);
-                _pathIsShape.RemoveAt(lowerIdx);
+                if (lowerIdx < _pathBoolOps.Count) _pathBoolOps.RemoveAt(lowerIdx);
+                if (lowerIdx < _pathIsShape.Count) _pathIsShape.RemoveAt(lowerIdx);
 
-                _paths.RemoveAt(_currentPathIndex);
-                _pathBoolOps.RemoveAt(_currentPathIndex);
-                _pathIsShape.RemoveAt(_currentPathIndex);
-
-                // 在原位置插入合并后的路径，继承下层路径的 BoolOp
-                _paths.Insert(_currentPathIndex, mergedPath);
-                _pathBoolOps.Insert(_currentPathIndex, inheritedOp);
-                _pathIsShape.Insert(_currentPathIndex, true);
-
-                // 插入孔洞路径（作为 Subtract 路径放在外轮廓下方）
-                if (mergeHoles != null)
+                if (_currentPathIndex < _paths.Count)
                 {
-                    for (int h = mergeHoles.Count - 1; h >= 0; h--)
+                    _paths.RemoveAt(_currentPathIndex);
+                    if (_currentPathIndex < _pathBoolOps.Count) _pathBoolOps.RemoveAt(_currentPathIndex);
+                    if (_currentPathIndex < _pathIsShape.Count) _pathIsShape.RemoveAt(_currentPathIndex);
+                }
+
+                // 合并结果插入策略：
+                // - 无孔洞的每个外轮廓 → 独立路径条目，op 按 Union/inheritedOp
+                // - 有孔洞的外轮廓 → 与其所有孔洞合并为单一路径条目（复合路径），
+                //   孔洞顶点的 IsNewFigure=true，op=inheritedOp（不再需要 Subtract 运算）
+                int insertIdx = _currentPathIndex;
+                int insertedCount = 0;
+
+                for (int o = 0; o < mergedOuters.Count; o++)
+                {
+                    if (mergedOuters[o] == null || mergedOuters[o].Count < 3) continue;
+
+                    // 当前外轮廓组的"底部 op"：组整体与下方内容的运算方式
+                    BooleanOperation groupBottomOp = (o == mergedOuters.Count - 1)
+                        ? inheritedOp
+                        : BooleanOperation.Union;
+
+                    // 统计该外轮廓的有效孔洞
+                    List<List<CurveVertex>> holes = null;
+                    int holeCount = 0;
+                    if (mergedHolesPerOuter != null && o < mergedHolesPerOuter.Count && mergedHolesPerOuter[o] != null)
                     {
-                        _paths.Insert(_currentPathIndex + 1, mergeHoles[h]);
-                        _pathBoolOps.Insert(_currentPathIndex + 1, BooleanOperation.Subtract);
-                        _pathIsShape.Insert(_currentPathIndex + 1, true);
+                        holes = mergedHolesPerOuter[o];
+                        foreach (List<CurveVertex> hv in holes)
+                            if (hv != null && hv.Count >= 3) holeCount++;
+                    }
+
+                    if (holeCount == 0)
+                    {
+                        // 无孔洞：直接作为独立路径插入
+                        _paths.Insert(insertIdx, mergedOuters[o]);
+                        _pathBoolOps.Insert(insertIdx, groupBottomOp);
+                        _pathIsShape.Insert(insertIdx, true);
+                        insertIdx++;
+                        insertedCount++;
+                    }
+                    else
+                    {
+                        // 有孔洞：合并为单条复合路径
+                        // 外轮廓顶点 + 各孔洞顶点（每个孔洞第一个顶点标记 IsNewFigure=true）
+                        List<CurveVertex> compoundPath = new List<CurveVertex>();
+
+                        // 外轮廓顶点（清除可能存在的旧 IsNewFigure 标记）
+                        foreach (CurveVertex v in mergedOuters[o])
+                        {
+                            CurveVertex cv = v.Clone();
+                            cv.IsNewFigure = false;
+                            compoundPath.Add(cv);
+                        }
+
+                        // 各孔洞顶点
+                        foreach (List<CurveVertex> hole in holes)
+                        {
+                            if (hole == null || hole.Count < 3) continue;
+                            for (int hi = 0; hi < hole.Count; hi++)
+                            {
+                                CurveVertex hv = hole[hi].Clone();
+                                hv.IsNewFigure = (hi == 0); // 孔洞第一个顶点标记新子图
+                                compoundPath.Add(hv);
+                            }
+                        }
+
+                        // 插入为单一路径条目，op=inheritedOp（不再需要 Subtract）
+                        _paths.Insert(insertIdx, compoundPath);
+                        _pathBoolOps.Insert(insertIdx, groupBottomOp);
+                        _pathIsShape.Insert(insertIdx, true);
+                        insertIdx++;
+                        insertedCount++;
                     }
                 }
+
+                // 确保 _pathBoolOps 和 _pathIsShape 与 _paths 同步
+                while (_pathBoolOps.Count < _paths.Count) _pathBoolOps.Add(BooleanOperation.None);
+                while (_pathBoolOps.Count > _paths.Count) _pathBoolOps.RemoveAt(_pathBoolOps.Count - 1);
+                while (_pathIsShape.Count < _paths.Count) _pathIsShape.Add(true);
+                while (_pathIsShape.Count > _paths.Count) _pathIsShape.RemoveAt(_pathIsShape.Count - 1);
+
+                int totalHoles = 0;
+                if (mergedHolesPerOuter != null)
+                    foreach (var hl in mergedHolesPerOuter)
+                        if (hl != null) totalHoles += hl.Count;
+
+                System.Diagnostics.Debug.WriteLine("Merge OK: " + insertedCount + " paths inserted, "
+                    + totalHoles + " holes, paths " + pathsBefore + "→" + _paths.Count);
+            }
+            }
+            catch (Exception ex)
+            {
+                System.Windows.Forms.MessageBox.Show(
+                    "合并插入阶段异常: " + ex.Message + "\n" + ex.StackTrace,
+                    "合并异常", System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Error);
             }
 
             _selectedVertices.Clear();
@@ -2112,6 +2232,13 @@ namespace DiagramDesigner.Controls
                     if (_filled && verts.Count >= 3)
                     {
                         GraphicsPath gp = BuildEditorPath(verts, _closedPath, hasCurves);
+                        // 复合路径（含 IsNewFigure 标记）使用 Winding 填充模式
+                        // 确保外轮廓和孔洞通过缠绕方向正确产生镂空
+                        bool hasFigMarkers = false;
+                        for (int i = 0; i < verts.Count; i++)
+                            if (verts[i].IsNewFigure) { hasFigMarkers = true; break; }
+                        if (hasFigMarkers)
+                            gp.FillMode = System.Drawing.Drawing2D.FillMode.Winding;
                         int alpha = isCurrent ? 180 : 70;
                         using (Brush brush = new SolidBrush(Color.FromArgb(alpha, _geomFillColor)))
                             g.FillPath(brush, gp);
@@ -2123,7 +2250,12 @@ namespace DiagramDesigner.Controls
                     float penWidth = isCurrent ? 2f : 1f;
                     using (Pen pen = new Pen(borderColor, penWidth))
                     {
-                        if (hasCurves)
+                        // 检测是否为复合路径
+                        bool isCompound = false;
+                        for (int i = 0; i < verts.Count; i++)
+                            if (verts[i].IsNewFigure) { isCompound = true; break; }
+
+                        if (hasCurves || isCompound)
                         {
                             using (GraphicsPath gp = BuildEditorPath(verts, _closedPath, true))
                                 g.DrawPath(pen, gp);
@@ -3047,6 +3179,8 @@ namespace DiagramDesigner.Controls
 
         /// <summary>
         /// 构建编辑器预览路径（像素坐标，含贝塞尔曲线）。
+        /// 支持复合路径：当顶点有 IsNewFigure=true 标记时，开始一个新的子图（Figure）。
+        /// 复合路径用 Winding 填充模式正确渲染孔洞（外轮廓 CW + 孔洞 CCW = 镂空）。
         /// </summary>
         private GraphicsPath BuildEditorPath(List<CurveVertex> verts, bool closed, bool useCurves)
         {
@@ -3054,38 +3188,112 @@ namespace DiagramDesigner.Controls
             int n = verts.Count;
             if (n < 2) return gp;
 
-            if (!useCurves)
+            // 检测是否为复合路径（有 IsNewFigure 标记）
+            bool hasFigureMarkers = false;
+            for (int i = 0; i < n; i++)
             {
-                for (int i = 0; i < n - 1; i++)
-                    gp.AddLine(verts[i].Position, verts[i + 1].Position);
-                if (closed && n >= 3)
-                    gp.AddLine(verts[n - 1].Position, verts[0].Position);
+                if (verts[i].IsNewFigure) { hasFigureMarkers = true; break; }
+            }
+
+            if (!hasFigureMarkers)
+            {
+                // 普通单图路径
+                if (!useCurves)
+                {
+                    for (int i = 0; i < n - 1; i++)
+                        gp.AddLine(verts[i].Position, verts[i + 1].Position);
+                    if (closed && n >= 3)
+                        gp.AddLine(verts[n - 1].Position, verts[0].Position);
+                    if (closed) gp.CloseFigure();
+                    return gp;
+                }
+
+                int edgeCount = closed ? n : n - 1;
+                for (int i = 0; i < edgeCount; i++)
+                {
+                    int next = (i + 1) % n;
+                    PointF p1 = verts[i].Position;
+                    PointF p2 = verts[next].Position;
+
+                    bool hasOut = verts[i].Handle != HandleType.None;
+                    bool hasIn = verts[next].Handle != HandleType.None;
+
+                    if (!hasOut && !hasIn)
+                        gp.AddLine(p1, p2);
+                    else
+                    {
+                        PointF cp1 = hasOut ? verts[i].GetHandleOutAbs() : p1;
+                        PointF cp2 = hasIn ? verts[next].GetHandleInAbs() : p2;
+                        gp.AddBezier(p1, cp1, cp2, p2);
+                    }
+                }
                 if (closed) gp.CloseFigure();
                 return gp;
             }
 
-            int edgeCount = closed ? n : n - 1;
-            for (int i = 0; i < edgeCount; i++)
+            // 复合路径：按 IsNewFigure 标记分割为多个子图
+            // 先收集各子图的顶点范围
+            List<int> figureStarts = new List<int>();
+            figureStarts.Add(0); // 第一个子图从 0 开始
+            for (int i = 1; i < n; i++)
             {
-                int next = (i + 1) % n;
-                PointF p1 = verts[i].Position;
-                PointF p2 = verts[next].Position;
+                if (verts[i].IsNewFigure)
+                    figureStarts.Add(i);
+            }
 
-                bool hasOut = verts[i].Handle != HandleType.None;
-                bool hasIn = verts[next].Handle != HandleType.None;
+            for (int fig = 0; fig < figureStarts.Count; fig++)
+            {
+                int start = figureStarts[fig];
+                int end = (fig + 1 < figureStarts.Count) ? figureStarts[fig + 1] : n;
+                int figN = end - start;
 
-                if (!hasOut && !hasIn)
+                if (figN < 2) continue;
+
+                if (fig > 0)
+                    gp.StartFigure();
+
+                // 判断该子图是否有曲线句柄
+                bool figUseCurves = useCurves;
+                if (!figUseCurves)
                 {
-                    gp.AddLine(p1, p2);
+                    for (int i = start; i < end; i++)
+                        if (verts[i].Handle != HandleType.None) { figUseCurves = true; break; }
+                }
+
+                if (!figUseCurves)
+                {
+                    for (int i = start; i < end - 1; i++)
+                        gp.AddLine(verts[i].Position, verts[i + 1].Position);
+                    if (closed && figN >= 3)
+                        gp.AddLine(verts[end - 1].Position, verts[start].Position);
+                    if (closed) gp.CloseFigure();
                 }
                 else
                 {
-                    PointF cp1 = hasOut ? verts[i].GetHandleOutAbs() : p1;
-                    PointF cp2 = hasIn ? verts[next].GetHandleInAbs() : p2;
-                    gp.AddBezier(p1, cp1, cp2, p2);
+                    int edgeCount = closed ? figN : figN - 1;
+                    for (int i = 0; i < edgeCount; i++)
+                    {
+                        int idx = start + i;
+                        int nextIdx = start + ((i + 1) % figN);
+                        PointF p1 = verts[idx].Position;
+                        PointF p2 = verts[nextIdx].Position;
+
+                        bool hasOut = verts[idx].Handle != HandleType.None;
+                        bool hasIn = verts[nextIdx].Handle != HandleType.None;
+
+                        if (!hasOut && !hasIn)
+                            gp.AddLine(p1, p2);
+                        else
+                        {
+                            PointF cp1 = hasOut ? verts[idx].GetHandleOutAbs() : p1;
+                            PointF cp2 = hasIn ? verts[nextIdx].GetHandleInAbs() : p2;
+                            gp.AddBezier(p1, cp1, cp2, p2);
+                        }
+                    }
+                    if (closed) gp.CloseFigure();
                 }
             }
-            if (closed) gp.CloseFigure();
+
             return gp;
         }
 
