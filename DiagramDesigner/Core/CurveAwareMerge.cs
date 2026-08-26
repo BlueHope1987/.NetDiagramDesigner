@@ -17,8 +17,6 @@ namespace DiagramDesigner.Core
     /// </summary>
     public static class CurveAwareMerge
     {
-        /// <summary>诊断信息：记录上次 Merge 调用的执行状态，供调用方排查问题</summary>
-        public static string LastDebugInfo = "";
         private struct BezierSeg
         {
             public PointF P0, C1, C2, P3;
@@ -99,19 +97,16 @@ namespace DiagramDesigner.Core
             out List<List<List<CurveVertex>>> holes)
         {
             holes = new List<List<List<CurveVertex>>>();
-            LastDebugInfo = "Merge started. ";
 
-            if (paths == null || paths.Count < 2) { LastDebugInfo += "FAIL: paths<2. "; return null; }
-            LastDebugInfo += "paths=" + paths.Count + ". ";
+            if (paths == null || paths.Count < 2) return null;
 
             // Step 0: 预扁平化所有路径（用于精确 PIP 测试）
             FlatPath[] flatPaths = new FlatPath[paths.Count];
             for (int i = 0; i < paths.Count; i++)
             {
-                if (paths[i] == null || paths[i].Count < 3) { LastDebugInfo += "FAIL: path[" + i + "] invalid. "; return null; }
+                if (paths[i] == null || paths[i].Count < 3) return null;
                 flatPaths[i] = FlattenPath(paths[i]);
             }
-            LastDebugInfo += "flatPaths ok. ";
 
             // Step 1: 由原始顶点构建边（含扁平采样）
             List<Edge> allEdges = new List<Edge>();
@@ -120,8 +115,7 @@ namespace DiagramDesigner.Core
                 List<Edge> pe = BuildEdges(paths[i], i);
                 if (pe != null) allEdges.AddRange(pe);
             }
-            if (allEdges.Count < 3) { LastDebugInfo += "FAIL: edges<3. "; return null; }
-            LastDebugInfo += "edges=" + allEdges.Count + ". ";
+            if (allEdges.Count < 3) return null;
 
             // Step 2: 查找不同路径间的所有交点（映射回原始参数）
             List<Crossing> crossings = new List<Crossing>();
@@ -129,13 +123,11 @@ namespace DiagramDesigner.Core
                 for (int j = i + 1; j < allEdges.Count; j++)
                     if (allEdges[i].PathIndex != allEdges[j].PathIndex)
                         FindIntersections(allEdges[i], i, allEdges[j], j, crossings);
-            LastDebugInfo += "crossings=" + crossings.Count + ". ";
 
             // Step 3: 在交点处分割边，生成精确子段
             List<SubEdge> allSubEdges = new List<SubEdge>();
             SplitEdgesAtCrossings(allEdges, crossings, allSubEdges);
-            if (allSubEdges.Count == 0) { LastDebugInfo += "FAIL: subEdges=0. "; return null; }
-            LastDebugInfo += "subEdges=" + allSubEdges.Count + ". ";
+            if (allSubEdges.Count == 0) return null;
 
             // Step 4: 边界测试 —— 用精确 PIP + 布尔运算语义
             for (int i = 0; i < allSubEdges.Count; i++)
@@ -143,21 +135,18 @@ namespace DiagramDesigner.Core
 
             List<SubEdge> boundary = new List<SubEdge>();
             foreach (SubEdge se in allSubEdges) if (se.IsBoundary) boundary.Add(se);
-            if (boundary.Count < 3) { LastDebugInfo += "FAIL: boundary<3 (count=" + boundary.Count + "). "; return null; }
-            LastDebugInfo += "boundary=" + boundary.Count + ". ";
+            if (boundary.Count < 3) return null;
 
             // Step 5: 链接所有边界子边为闭合环
             List<List<SubEdge>> loops = ChainAllLoops(boundary);
-            if (loops.Count == 0) { LastDebugInfo += "FAIL: loops=0. "; return null; }
-            LastDebugInfo += "loops=" + loops.Count + ". ";
+            if (loops.Count == 0) return null;
 
             // Step 6: 分类所有环 —— 区分外轮廓与孔洞，建立嵌套关系
             List<int> outerLoopIndices;
             List<List<int>> holeIndicesPerOuter;
             ClassifyLoops(loops, flatPaths, boolOps, out outerLoopIndices, out holeIndicesPerOuter);
 
-            if (outerLoopIndices == null || outerLoopIndices.Count == 0) { LastDebugInfo += "FAIL: no outers. "; return null; }
-            LastDebugInfo += "outers=" + outerLoopIndices.Count + ". ";
+            if (outerLoopIndices == null || outerLoopIndices.Count == 0) return null;
 
             // Step 7: 转换为 CurveVertex
             List<List<CurveVertex>> result = new List<List<CurveVertex>>();
@@ -180,8 +169,7 @@ namespace DiagramDesigner.Core
                 holes.Add(holeList);
             }
 
-            if (result.Count == 0) { LastDebugInfo += "FAIL: result=0. "; return null; }
-            LastDebugInfo += "SUCCESS outers=" + result.Count + " holes=" + holes.Count + ". ";
+            if (result.Count == 0) return null;
             return result;
         }
 

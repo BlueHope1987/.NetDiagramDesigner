@@ -86,6 +86,7 @@ namespace DiagramDesigner.Serialization
         private float _refWidth = 140f;
         private float _refHeight = 100f;
         private List<ActionData> _systemActions = new List<ActionData>();
+        private List<ImageLayerData> _imageLayers = new List<ImageLayerData>();
 
         public string ShapeClass
         {
@@ -264,6 +265,16 @@ namespace DiagramDesigner.Serialization
             get { return _systemActions; }
             set { _systemActions = value; }
         }
+
+        /// <summary>
+        /// 图片图层列表（对应 ShapeType.ImageLayers）。
+        /// 旧文件没有该字段时为空列表，不影响加载。
+        /// </summary>
+        public List<ImageLayerData> ImageLayers
+        {
+            get { return _imageLayers; }
+            set { _imageLayers = value; }
+        }
     }
 
     /// <summary>
@@ -435,6 +446,7 @@ namespace DiagramDesigner.Serialization
         private float _width = 1f;
         private float _height = 1f;
         private bool _showBorder = false;
+        private string _visibility = "";
         private int _argbBorderColor = Color.FromArgb(180, 180, 180).ToArgb();
         private string _title = "";
         private bool _isTitleZone = false;
@@ -496,6 +508,13 @@ namespace DiagramDesigner.Serialization
         {
             get { return _showBorder; }
             set { _showBorder = value; }
+        }
+
+        /// <summary>ZoneVisibility 枚举的字符串形式（Hidden/DesignTime/RunTime）。为空时回退到 ShowBorder。</summary>
+        public string Visibility
+        {
+            get { return _visibility; }
+            set { _visibility = value; }
         }
 
         public int ArgbBorderColor
@@ -763,6 +782,31 @@ namespace DiagramDesigner.Serialization
         }
     }
 
+    /// <summary>
+    /// ImageLayer 的可序列化数据载体。
+    /// </summary>
+    [Serializable]
+    public class ImageLayerData
+    {
+        private string _name = "Image";
+        private float _x = 0f;
+        private float _y = 0f;
+        private float _width = 0.5f;
+        private float _height = 0.5f;
+        private string _pngDataBase64 = "";
+        private bool _visible = true;
+        private float _aspectRatio = 1f;
+
+        public string Name { get { return _name; } set { _name = value; } }
+        public float X { get { return _x; } set { _x = value; } }
+        public float Y { get { return _y; } set { _y = value; } }
+        public float Width { get { return _width; } set { _width = value; } }
+        public float Height { get { return _height; } set { _height = value; } }
+        public string PngDataBase64 { get { return _pngDataBase64; } set { _pngDataBase64 = value; } }
+        public bool Visible { get { return _visible; } set { _visible = value; } }
+        public float AspectRatio { get { return _aspectRatio; } set { _aspectRatio = value; } }
+    }
+
     [Serializable]
     public class StateData
     {
@@ -840,6 +884,57 @@ namespace DiagramDesigner.Serialization
             get { return _zones; }
             set { _zones = value; }
         }
+    }
+
+    /// <summary>
+    /// ShapeType 的可序列化数据载体，用于工具箱的导入/导出功能。
+    /// 使用 DTO 层（RenderCommandData、ZoneData、StateData 等）避免
+    /// XmlSerializer 无法处理嵌套数组（PointF[] 等）的问题。
+    /// </summary>
+    [Serializable]
+    public class ShapeTypeData
+    {
+        private string _name = "";
+        private string _category = "基本图形";
+        private string _description = "";
+        private string _iconName = "";
+        private float _defaultWidth = 120f;
+        private float _defaultHeight = 80f;
+        private int _argbDefaultFillColor = Color.FromArgb(230, 240, 255).ToArgb();
+        private int _argbDefaultBorderColor = Color.FromArgb(80, 120, 180).ToArgb();
+        private int _argbDefaultTextColor = Color.FromArgb(40, 40, 40).ToArgb();
+        private bool _isContainer = false;
+        private bool _supportsMembers = false;
+        private string _nameAlignment = "Center";
+        private float _nameAreaTop = 0.35f;
+        private bool _allowRename = false;
+        private bool _resizable = false;
+        private List<RenderCommandData> _renderCommands = new List<RenderCommandData>();
+        private List<StateData> _defaultStates = new List<StateData>();
+        private List<ZoneData> _zones = new List<ZoneData>();
+        private List<ActionData> _customActions = new List<ActionData>();
+        private List<ImageLayerData> _imageLayers = new List<ImageLayerData>();
+
+        public string Name { get { return _name; } set { _name = value; } }
+        public string Category { get { return _category; } set { _category = value; } }
+        public string Description { get { return _description; } set { _description = value; } }
+        public string IconName { get { return _iconName; } set { _iconName = value; } }
+        public float DefaultWidth { get { return _defaultWidth; } set { _defaultWidth = value; } }
+        public float DefaultHeight { get { return _defaultHeight; } set { _defaultHeight = value; } }
+        public int ArgbDefaultFillColor { get { return _argbDefaultFillColor; } set { _argbDefaultFillColor = value; } }
+        public int ArgbDefaultBorderColor { get { return _argbDefaultBorderColor; } set { _argbDefaultBorderColor = value; } }
+        public int ArgbDefaultTextColor { get { return _argbDefaultTextColor; } set { _argbDefaultTextColor = value; } }
+        public bool IsContainer { get { return _isContainer; } set { _isContainer = value; } }
+        public bool SupportsMembers { get { return _supportsMembers; } set { _supportsMembers = value; } }
+        public string NameAlignment { get { return _nameAlignment; } set { _nameAlignment = value; } }
+        public float NameAreaTop { get { return _nameAreaTop; } set { _nameAreaTop = value; } }
+        public bool AllowRename { get { return _allowRename; } set { _allowRename = value; } }
+        public bool Resizable { get { return _resizable; } set { _resizable = value; } }
+        public List<RenderCommandData> RenderCommands { get { return _renderCommands; } set { _renderCommands = value; } }
+        public List<StateData> DefaultStates { get { return _defaultStates; } set { _defaultStates = value; } }
+        public List<ZoneData> Zones { get { return _zones; } set { _zones = value; } }
+        public List<ActionData> CustomActions { get { return _customActions; } set { _customActions = value; } }
+        public List<ImageLayerData> ImageLayers { get { return _imageLayers; } set { _imageLayers = value; } }
     }
 
     [Serializable]

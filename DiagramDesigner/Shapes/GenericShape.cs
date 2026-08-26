@@ -16,9 +16,11 @@ namespace DiagramDesigner.Shapes
     public class GenericShape : ShapeBase
     {
         /// <summary>
-        /// 全局标志：是否渲染 Zone 的视觉指示（边框、填充、标签等）。
+        /// 全局标志：主画布是否处于设计模式。
         /// 由 DrawingCanvas 在绘制前设置：设计模式 = true，运行模式 = false。
-        /// Zone 仅用于定义区域和行为，非设计模式下应完全不可见。
+        /// Zone 的实际显示由 Visibility 属性控制：
+        ///   设计模式下显示 DesignTime/RunTime，运行模式下仅显示 RunTime。
+        /// 图形编辑器中 Zone 始终可见，不受此标志影响。
         /// </summary>
         public static bool RenderZoneVisuals = true;
 
@@ -349,11 +351,133 @@ namespace DiagramDesigner.Shapes
             }
 
             // 1. 渲染图形主体
+            // 可缩放区域的实际边界（差分缩放后），供后续 Zone 可视化渲染使用
+            RectangleF? scalableZoneActualRect = null;
+
             if (commands != null && commands.Count > 0)
             {
-                foreach (RenderCommand cmd in commands)
+                // 查找可缩放区域（最多1个有效）
+                ShapeZone scalableZone = null;
+                if (effectiveZones != null)
                 {
-                    cmd.Execute(g, Bounds, colors, scale);
+                    foreach (ShapeZone z in effectiveZones)
+                    {
+                        if (z.IsScalableZone) { scalableZone = z; break; }
+                    }
+                }
+
+                if (scalableZone != null)
+                {
+                    // === 九宫格差分缩放 ===
+                    // 通过顶点变换器实现逐顶点的分段映射：
+                    // X 方向分为三段：[0, zoneX] 固定 / [zoneX, zoneX+zoneW] 拉伸 / [zoneX+zoneW, 1] 固定
+                    // Y 方向同理。边距基于参考尺寸（固定不缩放），区域吸收尺寸变化量。
+
+                    float zX = scalableZone.X;
+                    float zY = scalableZone.Y;
+                    float zW = scalableZone.Width;
+                    float zH = scalableZone.Height;
+                    float zoneRight = zX + zW;
+                    float zoneBottom = zY + zH;
+
+                    // 固定边距（基于参考尺寸）
+                    float leftMargin = zX * _refWidth;
+                    float topMargin = zY * _refHeight;
+                    float rightMargin = (1f - zoneRight) * _refWidth;
+                    float bottomMargin = (1f - zoneBottom) * _refHeight;
+
+                    // 区域实际边界（吸收元件尺寸变化量）
+                    float zoneActualX = Bounds.X + leftMargin;
+                    float zoneActualY = Bounds.Y + topMargin;
+                    float zoneActualW = Math.Max(1f, Bounds.Width - leftMargin - rightMargin);
+                    float zoneActualH = Math.Max(1f, Bounds.Height - topMargin - bottomMargin);
+                    float zoneActualRight = zoneActualX + zoneActualW;
+                    float zoneActualBottom = zoneActualY + zoneActualH;
+
+                    // 记录实际区域边界供后续可视化使用
+                    scalableZoneActualRect = new RectangleF(zoneActualX, zoneActualY, zoneActualW, zoneActualH);
+
+                    // 构建九宫格顶点变换器
+                    RenderCommand.VertexTransformer transformer = delegate(float normX, float normY)
+                    {
+                        float pixelX, pixelY;
+
+                        // === X 方向分段映射 ===
+                        if (normX <= zX)
+                        {
+                            // 左侧固定区：[0, zoneX] → [Bounds.X, zoneActualX]
+                            // 使用参考尺寸保持比例
+                            if (zX > 0.0001f)
+                                pixelX = Bounds.X + (normX / zX) * leftMargin;
+                            else
+                                pixelX = Bounds.X;
+                        }
+                        else if (normX <= zoneRight)
+                        {
+                            // 中间拉伸区：[zoneX, zoneRight] → [zoneActualX, zoneActualRight]
+                            if (zW > 0.0001f)
+                                pixelX = zoneActualX + ((normX - zX) / zW) * zoneActualW;
+                            else
+                                pixelX = zoneActualX;
+                        }
+                        else
+                        {
+                            // 右侧固定区：[zoneRight, 1] → [zoneActualRight, Bounds.Right]
+                            float rightRange = 1f - zoneRight;
+                            if (rightRange > 0.0001f)
+                                pixelX = zoneActualRight + ((normX - zoneRight) / rightRange) * rightMargin;
+                            else
+                                pixelX = zoneActualRight;
+                        }
+
+                        // === Y 方向分段映射 ===
+                        if (normY <= zY)
+                        {
+                            if (zY > 0.0001f)
+                                pixelY = Bounds.Y + (normY / zY) * topMargin;
+                            else
+                                pixelY = Bounds.Y;
+                        }
+                        else if (normY <= zoneBottom)
+                        {
+                            if (zH > 0.0001f)
+                                pixelY = zoneActualY + ((normY - zY) / zH) * zoneActualH;
+                            else
+                                pixelY = zoneActualY;
+                        }
+                        else
+                        {
+                            float bottomRange = 1f - zoneBottom;
+                            if (bottomRange > 0.0001f)
+                                pixelY = zoneActualBottom + ((normY - zoneBottom) / bottomRange) * bottomMargin;
+                            else
+                                pixelY = zoneActualBottom;
+                        }
+
+                        return new PointF(pixelX, pixelY);
+                    };
+
+                    // 设置变换器，执行所有指令，然后清除
+                    RenderCommand.SetVertexTransformer(transformer);
+                    try
+                    {
+                        foreach (RenderCommand cmd in commands)
+                        {
+                            cmd.Execute(g, Bounds, colors, scale);
+                        }
+                    }
+                    finally
+                    {
+                        RenderCommand.ClearVertexTransformer();
+                    }
+                }
+                else
+                {
+                    // 无可缩放区域：正常渲染
+                    foreach (RenderCommand cmd in commands)
+                    {
+                        cmd.Execute(g, Bounds, colors, scale);
+                    }
                 }
             }
             else
@@ -361,14 +485,42 @@ namespace DiagramDesigner.Shapes
                 DrawFallback(g, colors, scale);
             }
 
-            // 2. 渲染 Zone 边框和 Zone 内绘制指令（仅设计模式可见）
-            if (RenderZoneVisuals && effectiveZones != null)
+            // 2. 渲染图片图层（从 ShapeType 定义获取，随元件边界缩放）
+            if (type != null && type.ImageLayers != null && type.ImageLayers.Count > 0)
+            {
+                foreach (ImageLayer imgLayer in type.ImageLayers)
+                {
+                    if (!imgLayer.Visible) continue;
+
+                    Image img = imgLayer.ToImage();
+                    if (img == null) continue;
+
+                    RectangleF imgBounds = imgLayer.GetBounds(Bounds);
+                    g.DrawImage(img, imgBounds);
+                    img.Dispose();
+                }
+            }
+
+            // 3. 渲染 Zone 边框和 Zone 内绘制指令
+            // 根据 Visibility 控制显示时机：设计模式下显示 DesignTime/RunTime，运行模式下仅显示 RunTime
+            // 在图形编辑器中由编辑器自身绘制 Zone，不受此逻辑影响
+            if (effectiveZones != null)
             {
                 foreach (ShapeZone zone in effectiveZones)
                 {
+                    // 根据 Visibility 决定是否在主画布上渲染
+                    bool shouldRender;
+                    if (RenderZoneVisuals)
+                        shouldRender = (zone.Visibility == ZoneVisibility.DesignTime || zone.Visibility == ZoneVisibility.RunTime);
+                    else
+                        shouldRender = (zone.Visibility == ZoneVisibility.RunTime);
+
+                    if (!shouldRender)
+                        continue;
+
                     RectangleF zoneRect = GetZoneBounds(zone);
 
-                    // 功能性 Zone（点击/连接）以半透明填充 + 虚线边框显示
+                    // 功能性 Zone（点击/连接/可缩放）以半透明填充 + 虚线边框显示
                     if (zone.IsClickZone || zone.IsConnectionZone)
                     {
                         Color fillC = Color.FromArgb(60, zone.FillColor.ToColor());
@@ -391,9 +543,46 @@ namespace DiagramDesigner.Shapes
                                 g.FillEllipse(dotBrush, cx - dotR, cy - dotR, dotR * 2, dotR * 2);
                         }
                     }
-                    else if (zone.ShowBorder)
+                    else if (zone.IsScalableZone)
                     {
-                        // 普通显示边框的 Zone
+                        // 可缩放区域使用差分缩放后的实际边界（非比例边界）
+                        RectangleF szRect = scalableZoneActualRect.HasValue
+                            ? scalableZoneActualRect.Value : zoneRect;
+
+                        // 可缩放区域：半透明蓝色填充 + 虚线边框 + 标签
+                        Color scalableFill = Color.FromArgb(30, 0, 120, 215);
+                        using (Brush brush = new SolidBrush(scalableFill))
+                            g.FillRectangle(brush, szRect);
+
+                        using (Pen pen = new Pen(Color.FromArgb(0, 120, 215), 1f / scale))
+                        {
+                            pen.DashStyle = DashStyle.Dash;
+                            g.DrawRectangle(pen, szRect.X, szRect.Y, szRect.Width, szRect.Height);
+                        }
+
+                        // 绘制缩放方向指示线（双向箭头）
+                        float cx = szRect.X + szRect.Width / 2f;
+                        float cy = szRect.Y + szRect.Height / 2f;
+                        float arrowLen = 8f / scale;
+                        using (Pen arrowPen = new Pen(Color.FromArgb(120, 0, 120, 215), 1f / scale))
+                        {
+                            // 水平双向箭头
+                            g.DrawLine(arrowPen, cx - arrowLen, cy, cx + arrowLen, cy);
+                            // 垂直双向箭头
+                            g.DrawLine(arrowPen, cx, cy - arrowLen, cx, cy + arrowLen);
+                        }
+
+                        // 标签
+                        using (Font font = new Font("Microsoft YaHei", 7f / scale))
+                        using (Brush labelBrush = new SolidBrush(Color.FromArgb(0, 120, 215)))
+                        {
+                            g.DrawString("[可缩放]", font, labelBrush,
+                                szRect.X + 2f / scale, szRect.Y + 2f / scale);
+                        }
+                    }
+                    else
+                    {
+                        // 普通区域：虚线边框
                         using (Pen pen = new Pen(zone.BorderColor.ToColor(), 0.5f / scale))
                         {
                             pen.DashStyle = DashStyle.Dash;
@@ -412,13 +601,13 @@ namespace DiagramDesigner.Shapes
                 }
             }
 
-            // 3. 渲染标题（使用 Title Zone 或回退到旧逻辑）
+            // 4. 渲染标题（使用 Title Zone 或回退到旧逻辑）
             DrawName(g, scale, effectiveZones);
 
-            // 4. 渲染成员列表（使用 Member Zone 或回退到旧逻辑）
+            // 5. 渲染成员列表（使用 Member Zone 或回退到旧逻辑）
             DrawMembers(g, scale, effectiveZones);
 
-            // 5. 渲染选中状态
+            // 6. 渲染选中状态
             DrawSelection(g, scale);
         }
 

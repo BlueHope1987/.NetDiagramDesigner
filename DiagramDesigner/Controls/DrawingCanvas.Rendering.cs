@@ -148,7 +148,7 @@ namespace DiagramDesigner.Controls
 
         private void DrawShapes(Graphics g)
         {
-            // 设置 Zone 可见性：仅设计模式下显示 Zone 视觉指示
+            // 设置主画布模式：设计模式下显示 DesignTime/RunTime 区域，运行模式下仅显示 RunTime
             GenericShape.RenderZoneVisuals = _config.DesignMode;
 
             List<ShapeBase> shapes = _document.Shapes;

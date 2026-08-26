@@ -44,6 +44,7 @@
     <Compile Include="Core\CurveVertex.cs" />
     <Compile Include="Core\ShapeZone.cs" />
     <Compile Include="Core\ShapeType.cs" />
+    <Compile Include="Core\ImageLayer.cs" />
     <Compile Include="Core\ShapeTypeRegistry.cs" />
     <Compile Include="Core\ShapeBase.cs" />
     <Compile Include="Core\Connection.cs" />

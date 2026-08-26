@@ -38,6 +38,33 @@ namespace DiagramDesigner.Core
     [Serializable]
     public class RenderCommand
     {
+        // === 九宫格顶点变换器 ===
+        // 当设置时，所有归一化坐标通过此变换器映射到像素坐标，
+        // 实现可缩放区域的差分缩放（区域内拉伸，区域外固定边距）。
+        public delegate PointF VertexTransformer(float normX, float normY);
+
+        private static VertexTransformer _activeTransformer = null;
+
+        /// <summary>设置当前线程的顶点变换器（在 Execute 前设置，Execute 后清除）</summary>
+        public static void SetVertexTransformer(VertexTransformer transformer)
+        {
+            _activeTransformer = transformer;
+        }
+
+        /// <summary>清除顶点变换器，恢复标准等比映射</summary>
+        public static void ClearVertexTransformer()
+        {
+            _activeTransformer = null;
+        }
+
+        /// <summary>将归一化坐标映射到像素坐标。有变换器时使用分段映射，否则使用标准等比映射。</summary>
+        private static PointF MapPoint(float normX, float normY, RectangleF rect)
+        {
+            if (_activeTransformer != null)
+                return _activeTransformer(normX, normY);
+            return new PointF(rect.X + normX * rect.Width, rect.Y + normY * rect.Height);
+        }
+
         private RenderCommandType _commandType = RenderCommandType.Rectangle;
         private float _x = 0f;
         private float _y = 0f;
@@ -233,10 +260,13 @@ namespace DiagramDesigner.Core
 
         public void Execute(Graphics g, RectangleF bounds, ShapeColors colors, float scale)
         {
-            float absX = bounds.X + _x * bounds.Width;
-            float absY = bounds.Y + _y * bounds.Height;
-            float absW = _width * bounds.Width;
-            float absH = _height * bounds.Height;
+            // 使用变换器计算命令的绝对边界（支持九宫格差分缩放）
+            PointF tl = MapPoint(_x, _y, bounds);
+            PointF br = MapPoint(_x + _width, _y + _height, bounds);
+            float absX = tl.X;
+            float absY = tl.Y;
+            float absW = br.X - tl.X;
+            float absH = br.Y - tl.Y;
             RectangleF rect = new RectangleF(absX, absY, absW, absH);
 
             Color stroke = _useShapeColors ? colors.BorderColor : _strokeColor.ToColor();
@@ -355,9 +385,7 @@ namespace DiagramDesigner.Core
             PointF[] pts = new PointF[_polygonPoints.Length];
             for (int i = 0; i < _polygonPoints.Length; i++)
             {
-                pts[i] = new PointF(
-                    rect.X + _polygonPoints[i].X * rect.Width,
-                    rect.Y + _polygonPoints[i].Y * rect.Height);
+                pts[i] = MapPoint(_polygonPoints[i].X, _polygonPoints[i].Y, rect);
             }
 
             if (_fill)
@@ -401,12 +429,10 @@ namespace DiagramDesigner.Core
             }
 
             // 复合路径：按 IsNewFigure 分割为多个子图
-            // 计算绝对坐标顶点
+            // 计算绝对坐标顶点（使用变换器支持九宫格缩放）
             PointF[] absPts = new PointF[n];
             for (int i = 0; i < n; i++)
-                absPts[i] = new PointF(
-                    rect.X + normPoints[i].X * rect.Width,
-                    rect.Y + normPoints[i].Y * rect.Height);
+                absPts[i] = MapPoint(normPoints[i].X, normPoints[i].Y, rect);
 
             // 收集各子图的起止索引
             List<int> figStarts = new List<int>();
@@ -441,11 +467,12 @@ namespace DiagramDesigner.Core
                     }
                     else
                     {
+                        // 控制点 = 顶点 + 句柄偏移，同样使用变换器映射
                         PointF cp1 = hasOut
-                            ? new PointF(p1.X + handleOuts[idx].X * rect.Width, p1.Y + handleOuts[idx].Y * rect.Height)
+                            ? MapPoint(normPoints[idx].X + handleOuts[idx].X, normPoints[idx].Y + handleOuts[idx].Y, rect)
                             : p1;
                         PointF cp2 = hasIn
-                            ? new PointF(p2.X + handleIns[nextIdx].X * rect.Width, p2.Y + handleIns[nextIdx].Y * rect.Height)
+                            ? MapPoint(normPoints[nextIdx].X + handleIns[nextIdx].X, normPoints[nextIdx].Y + handleIns[nextIdx].Y, rect)
                             : p2;
                         gp.AddBezier(p1, cp1, cp2, p2);
                     }
@@ -465,12 +492,10 @@ namespace DiagramDesigner.Core
             int n = normPoints.Length;
             if (n < 2) return gp;
 
-            // 计算绝对坐标顶点
+            // 计算绝对坐标顶点（使用变换器支持九宫格缩放）
             PointF[] absPts = new PointF[n];
             for (int i = 0; i < n; i++)
-                absPts[i] = new PointF(
-                    rect.X + normPoints[i].X * rect.Width,
-                    rect.Y + normPoints[i].Y * rect.Height);
+                absPts[i] = MapPoint(normPoints[i].X, normPoints[i].Y, rect);
 
             int edgeCount = closed ? n : n - 1;
             for (int i = 0; i < edgeCount; i++)
@@ -489,11 +514,12 @@ namespace DiagramDesigner.Core
                 else
                 {
                     // 三次贝塞尔：cp1 从 p1 的 HandleOut，cp2 从 p2 的 HandleIn
+                    // 控制点 = 顶点 + 句柄偏移，使用变换器映射
                     PointF cp1 = hasOut
-                        ? new PointF(p1.X + handleOuts[i].X * rect.Width, p1.Y + handleOuts[i].Y * rect.Height)
+                        ? MapPoint(normPoints[i].X + handleOuts[i].X, normPoints[i].Y + handleOuts[i].Y, rect)
                         : p1;
                     PointF cp2 = hasIn
-                        ? new PointF(p2.X + handleIns[next].X * rect.Width, p2.Y + handleIns[next].Y * rect.Height)
+                        ? MapPoint(normPoints[next].X + handleIns[next].X, normPoints[next].Y + handleIns[next].Y, rect)
                         : p2;
                     gp.AddBezier(p1, cp1, cp2, p2);
                 }
@@ -539,9 +565,7 @@ namespace DiagramDesigner.Core
                     PointF[] pts = new PointF[def.Points.Length];
                     for (int i = 0; i < def.Points.Length; i++)
                     {
-                        pts[i] = new PointF(
-                            rect.X + def.Points[i].X * rect.Width,
-                            rect.Y + def.Points[i].Y * rect.Height);
+                        pts[i] = MapPoint(def.Points[i].X, def.Points[i].Y, rect);
                     }
                     gp = new GraphicsPath();
                     gp.FillMode = FillMode.Winding;

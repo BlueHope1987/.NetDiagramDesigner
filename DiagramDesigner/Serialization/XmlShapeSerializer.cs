@@ -33,6 +33,186 @@ namespace DiagramDesigner.Serialization
             return ConvertFromData(data);
         }
 
+        /// <summary>
+        /// 从文件反序列化单个图形类型定义（ShapeType）。
+        /// 用于工具箱的导入功能，读取已保存的 XML 形状定义文件。
+        /// 支持 ShapeTypeData 格式（推荐）和旧版 DocumentData 格式（兼容）。
+        /// </summary>
+        public static ShapeType DeserializeFromFile(string filePath)
+        {
+            using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read))
+            {
+                return DeserializeShapeTypeFromStream(fs);
+            }
+        }
+
+        /// <summary>
+        /// 将单个图形类型定义序列化到文件（导出功能）。
+        /// 使用 ShapeTypeData DTO 层，避免 XmlSerializer 无法处理嵌套数组的问题。
+        /// </summary>
+        public static void SerializeShapeType(string filePath, ShapeType shapeType)
+        {
+            ShapeTypeData data = ToShapeTypeData(shapeType);
+            XmlSerializer serializer = new XmlSerializer(typeof(ShapeTypeData));
+            using (StreamWriter writer = new StreamWriter(filePath))
+            {
+                serializer.Serialize(writer, data);
+            }
+        }
+
+        /// <summary>
+        /// 从流中反序列化 ShapeType，自动检测 ShapeTypeData 或 DocumentData 格式。
+        /// </summary>
+        private static ShapeType DeserializeShapeTypeFromStream(Stream stream)
+        {
+            // 先读取全部内容用于格式检测
+            StreamReader reader = new StreamReader(stream);
+            string xmlContent = reader.ReadToEnd();
+
+            // 检测根元素名称
+            string rootElement = DetectXmlRootElement(xmlContent);
+
+            // 创建新的 MemoryStream 供 XmlSerializer 使用
+            using (MemoryStream ms = new MemoryStream(
+                System.Text.Encoding.UTF8.GetBytes(xmlContent)))
+            {
+                if (rootElement == "ShapeTypeData")
+                {
+                    XmlSerializer serializer = new XmlSerializer(typeof(ShapeTypeData));
+                    ShapeTypeData data = serializer.Deserialize(ms) as ShapeTypeData;
+                    return FromShapeTypeData(data);
+                }
+                else if (rootElement == "DocumentData")
+                {
+                    // 兼容旧格式：从 DocumentData 中提取第一个形状
+                    ms.Position = 0;
+                    XmlSerializer docSerializer = new XmlSerializer(typeof(DocumentData));
+                    DocumentData docData = docSerializer.Deserialize(ms) as DocumentData;
+                    if (docData != null && docData.Shapes.Count > 0)
+                    {
+                        return ExtractShapeTypeFromDocument(docData);
+                    }
+                    return null;
+                }
+                else
+                {
+                    // 未知格式，尝试用 ShapeTypeData 解析
+                    ms.Position = 0;
+                    XmlSerializer serializer = new XmlSerializer(typeof(ShapeTypeData));
+                    ShapeTypeData data = serializer.Deserialize(ms) as ShapeTypeData;
+                    return FromShapeTypeData(data);
+                }
+            }
+        }
+
+        /// <summary>检测 XML 字符串的根元素名称</summary>
+        private static string DetectXmlRootElement(string xmlContent)
+        {
+            if (string.IsNullOrEmpty(xmlContent))
+                return "";
+
+            int pos = 0;
+            while (pos < xmlContent.Length)
+            {
+                if (xmlContent[pos] == '<')
+                {
+                    // 跳过 XML 声明
+                    if (pos + 1 < xmlContent.Length && xmlContent[pos + 1] == '?')
+                    {
+                        int end = xmlContent.IndexOf("?>", pos);
+                        if (end < 0) break;
+                        pos = end + 2;
+                        continue;
+                    }
+                    // 跳过注释
+                    if (pos + 3 < xmlContent.Length && xmlContent.Substring(pos, 4) == "<!--")
+                    {
+                        int end = xmlContent.IndexOf("-->", pos);
+                        if (end < 0) break;
+                        pos = end + 3;
+                        continue;
+                    }
+                    // 找到根元素
+                    int tagEnd = xmlContent.IndexOf('>', pos);
+                    if (tagEnd < 0) break;
+                    string tag = xmlContent.Substring(pos + 1, tagEnd - pos - 1);
+                    int space = tag.IndexOf(' ');
+                    if (space >= 0)
+                        tag = tag.Substring(0, space);
+                    int colon = tag.IndexOf(':');
+                    if (colon >= 0)
+                        tag = tag.Substring(colon + 1);
+                    return tag;
+                }
+                pos++;
+            }
+            return "";
+        }
+
+        /// <summary>从 DocumentData 中提取第一个形状的 ShapeType 定义</summary>
+        private static ShapeType ExtractShapeTypeFromDocument(DocumentData docData)
+        {
+            if (docData.Shapes.Count == 0)
+                return null;
+
+            ShapeData sd = docData.Shapes[0];
+            if (string.IsNullOrEmpty(sd.ShapeTypeName))
+                return null;
+
+            ShapeType existing = ShapeTypeRegistry.Instance.GetShapeType(sd.ShapeTypeName);
+            if (existing != null)
+                return existing;
+
+            ShapeType st = new ShapeType();
+            st.Name = sd.ShapeTypeName;
+
+            if (sd.States != null)
+            {
+                foreach (StateData stateData in sd.States)
+                {
+                    ShapeState s = new ShapeState();
+                    s.Name = stateData.Name;
+                    s.FillColor = new XmlColor(Color.FromArgb(stateData.ArgbFillColor));
+                    s.BorderColor = new XmlColor(Color.FromArgb(stateData.ArgbBorderColor));
+                    s.TextColor = new XmlColor(Color.FromArgb(stateData.ArgbTextColor));
+                    s.HeaderColor = new XmlColor(Color.FromArgb(stateData.ArgbHeaderColor));
+                    s.Priority = stateData.Priority;
+                    s.UseCustomRenderCommands = stateData.UseCustomRenderCommands;
+
+                    if (stateData.CustomRenderCommands != null)
+                    {
+                        foreach (RenderCommandData rcd in stateData.CustomRenderCommands)
+                            s.CustomRenderCommands.Add(FromCommandData(rcd));
+                    }
+
+                    if (stateData.Zones != null)
+                    {
+                        foreach (ZoneData zd in stateData.Zones)
+                            s.CustomZones.Add(FromZoneData(zd));
+                    }
+
+                    st.DefaultStates.Add(s);
+                }
+            }
+
+            if (sd.Zones != null)
+            {
+                foreach (ZoneData zd in sd.Zones)
+                    st.Zones.Add(FromZoneData(zd));
+            }
+
+            if (sd.ImageLayers != null)
+            {
+                foreach (ImageLayerData ild in sd.ImageLayers)
+                    st.ImageLayers.Add(FromImageLayerData(ild));
+            }
+
+            st.DefaultWidth = sd.RefWidth;
+            st.DefaultHeight = sd.RefHeight;
+
+            return st;
+        }
+
         public static DocumentData ConvertToData(DrawingDocument document)
         {
             DocumentData data = new DocumentData();
@@ -261,6 +441,18 @@ namespace DiagramDesigner.Serialization
                             sd.SystemActions.Add(ad);
                     }
                 }
+
+                // 序列化图片图层列表（从 ShapeType 获取，随文档一起存储）
+                ShapeType imgType = ShapeTypeRegistry.Instance.GetShapeType(g.ShapeTypeName);
+                if (imgType != null && imgType.ImageLayers != null)
+                {
+                    foreach (ImageLayer layer in imgType.ImageLayers)
+                    {
+                        ImageLayerData ild = ToImageLayerData(layer);
+                        if (ild != null)
+                            sd.ImageLayers.Add(ild);
+                    }
+                }
             }
 
             return sd;
@@ -365,6 +557,24 @@ namespace DiagramDesigner.Serialization
                         ShapeAction action = FromActionData(ad);
                         if (action != null)
                             g.SystemActions.Add(action);
+                    }
+                }
+
+                // 反序列化图片图层列表：将文档中的 ImageLayerData 还原为 ImageLayer，
+                // 并同步到 ShapeTypeRegistry 中对应的 ShapeType（供渲染时通过类型名访问）。
+                // 仅当文档携带图片图层数据时才更新，避免覆盖工具箱已有的定义。
+                if (sd.ImageLayers != null && sd.ImageLayers.Count > 0)
+                {
+                    ShapeType type = ShapeTypeRegistry.Instance.GetShapeType(sd.ShapeTypeName);
+                    if (type != null)
+                    {
+                        type.ImageLayers.Clear();
+                        foreach (ImageLayerData ild in sd.ImageLayers)
+                        {
+                            ImageLayer layer = FromImageLayerData(ild);
+                            if (layer != null)
+                                type.ImageLayers.Add(layer);
+                        }
                     }
                 }
 
@@ -482,7 +692,8 @@ namespace DiagramDesigner.Serialization
             zd.Y = zone.Y;
             zd.Width = zone.Width;
             zd.Height = zone.Height;
-            zd.ShowBorder = zone.ShowBorder;
+            zd.Visibility = zone.Visibility.ToString();
+            zd.ShowBorder = zone.Visibility != ZoneVisibility.Hidden;
             zd.ArgbBorderColor = zone.BorderColor.Argb;
             zd.Title = zone.Title;
             zd.IsTitleZone = zone.IsTitleZone;
@@ -526,7 +737,23 @@ namespace DiagramDesigner.Serialization
             zone.Y = zd.Y;
             zone.Width = zd.Width;
             zone.Height = zd.Height;
-            zone.ShowBorder = zd.ShowBorder;
+
+            // 优先使用 Visibility 字符串；为空时回退到旧版 ShowBorder 布尔值
+            if (!string.IsNullOrEmpty(zd.Visibility))
+            {
+                try
+                {
+                    zone.Visibility = (ZoneVisibility)Enum.Parse(typeof(ZoneVisibility), zd.Visibility);
+                }
+                catch
+                {
+                    zone.Visibility = zd.ShowBorder ? ZoneVisibility.DesignTime : ZoneVisibility.Hidden;
+                }
+            }
+            else
+            {
+                zone.Visibility = zd.ShowBorder ? ZoneVisibility.DesignTime : ZoneVisibility.Hidden;
+            }
             zone.BorderColor = new XmlColor(Color.FromArgb(zd.ArgbBorderColor));
             zone.Title = zd.Title;
             zone.IsTitleZone = zd.IsTitleZone;
@@ -619,6 +846,244 @@ namespace DiagramDesigner.Serialization
                 }
             }
             return action;
+        }
+
+        // =====================================================================
+        // ImageLayer <-> ImageLayerData 转换
+        // =====================================================================
+
+        /// <summary>将 ImageLayer 转换为可序列化的 ImageLayerData。</summary>
+        private static ImageLayerData ToImageLayerData(ImageLayer layer)
+        {
+            if (layer == null)
+                return null;
+
+            ImageLayerData ild = new ImageLayerData();
+            ild.Name = layer.Name;
+            ild.X = layer.X;
+            ild.Y = layer.Y;
+            ild.Width = layer.Width;
+            ild.Height = layer.Height;
+            ild.PngDataBase64 = layer.PngDataBase64;
+            ild.Visible = layer.Visible;
+            ild.AspectRatio = layer.AspectRatio;
+            return ild;
+        }
+
+        /// <summary>将 ImageLayerData 还原为 ImageLayer。</summary>
+        private static ImageLayer FromImageLayerData(ImageLayerData ild)
+        {
+            if (ild == null)
+                return null;
+
+            ImageLayer layer = new ImageLayer();
+            layer.Name = ild.Name;
+            layer.X = ild.X;
+            layer.Y = ild.Y;
+            layer.Width = ild.Width;
+            layer.Height = ild.Height;
+            layer.PngDataBase64 = ild.PngDataBase64;
+            layer.Visible = ild.Visible;
+            layer.AspectRatio = ild.AspectRatio;
+            return layer;
+        }
+
+        // =====================================================================
+        // ShapeType <-> ShapeTypeData 转换（导入/导出专用）
+        // =====================================================================
+
+        /// <summary>将 ShapeType 转换为可序列化的 ShapeTypeData。</summary>
+        private static ShapeTypeData ToShapeTypeData(ShapeType st)
+        {
+            if (st == null)
+                return null;
+
+            ShapeTypeData data = new ShapeTypeData();
+            data.Name = st.Name;
+            data.Category = st.Category;
+            data.Description = st.Description;
+            data.IconName = st.IconName;
+            data.DefaultWidth = st.DefaultWidth;
+            data.DefaultHeight = st.DefaultHeight;
+            data.ArgbDefaultFillColor = st.DefaultFillColor.Argb;
+            data.ArgbDefaultBorderColor = st.DefaultBorderColor.Argb;
+            data.ArgbDefaultTextColor = st.DefaultTextColor.Argb;
+            data.IsContainer = st.IsContainer;
+            data.SupportsMembers = st.SupportsMembers;
+            data.NameAlignment = st.NameAlignment.ToString();
+            data.NameAreaTop = st.NameAreaTop;
+            data.AllowRename = st.AllowRename;
+            data.Resizable = st.Resizable;
+
+            // 渲染指令
+            if (st.RenderCommands != null)
+            {
+                foreach (RenderCommand rc in st.RenderCommands)
+                    data.RenderCommands.Add(ToCommandData(rc));
+            }
+
+            // 默认状态
+            if (st.DefaultStates != null)
+            {
+                foreach (ShapeState s in st.DefaultStates)
+                {
+                    StateData sd = new StateData();
+                    sd.Name = s.Name;
+                    sd.ArgbFillColor = s.FillColor.Argb;
+                    sd.ArgbBorderColor = s.BorderColor.Argb;
+                    sd.ArgbTextColor = s.TextColor.Argb;
+                    sd.ArgbHeaderColor = s.HeaderColor.Argb;
+                    sd.Priority = s.Priority;
+                    sd.UseCustomRenderCommands = s.UseCustomRenderCommands;
+
+                    if (s.CustomRenderCommands != null)
+                    {
+                        foreach (RenderCommand rc in s.CustomRenderCommands)
+                            sd.CustomRenderCommands.Add(ToCommandData(rc));
+                    }
+
+                    if (s.CustomZones != null)
+                    {
+                        foreach (ShapeZone z in s.CustomZones)
+                            sd.Zones.Add(ToZoneData(z));
+                    }
+
+                    data.DefaultStates.Add(sd);
+                }
+            }
+
+            // Zone 列表
+            if (st.Zones != null)
+            {
+                foreach (ShapeZone z in st.Zones)
+                    data.Zones.Add(ToZoneData(z));
+            }
+
+            // 自定义行为
+            if (st.CustomActions != null)
+            {
+                foreach (ShapeAction a in st.CustomActions)
+                {
+                    ActionData ad = ToActionData(a);
+                    if (ad != null)
+                        data.CustomActions.Add(ad);
+                }
+            }
+
+            // 图片图层
+            if (st.ImageLayers != null)
+            {
+                foreach (ImageLayer il in st.ImageLayers)
+                {
+                    ImageLayerData ild = ToImageLayerData(il);
+                    if (ild != null)
+                        data.ImageLayers.Add(ild);
+                }
+            }
+
+            return data;
+        }
+
+        /// <summary>将 ShapeTypeData 还原为 ShapeType。</summary>
+        private static ShapeType FromShapeTypeData(ShapeTypeData data)
+        {
+            if (data == null)
+                return null;
+
+            ShapeType st = new ShapeType();
+            st.Name = data.Name;
+            st.Category = data.Category;
+            st.Description = data.Description;
+            st.IconName = data.IconName;
+            st.DefaultWidth = data.DefaultWidth;
+            st.DefaultHeight = data.DefaultHeight;
+            st.DefaultFillColor = new XmlColor(Color.FromArgb(data.ArgbDefaultFillColor));
+            st.DefaultBorderColor = new XmlColor(Color.FromArgb(data.ArgbDefaultBorderColor));
+            st.DefaultTextColor = new XmlColor(Color.FromArgb(data.ArgbDefaultTextColor));
+            st.IsContainer = data.IsContainer;
+            st.SupportsMembers = data.SupportsMembers;
+
+            try
+            {
+                st.NameAlignment = (NameAlignment)Enum.Parse(
+                    typeof(NameAlignment), data.NameAlignment);
+            }
+            catch
+            {
+                st.NameAlignment = NameAlignment.Center;
+            }
+
+            st.NameAreaTop = data.NameAreaTop;
+            st.AllowRename = data.AllowRename;
+            st.Resizable = data.Resizable;
+
+            // 渲染指令
+            if (data.RenderCommands != null)
+            {
+                foreach (RenderCommandData rcd in data.RenderCommands)
+                    st.RenderCommands.Add(FromCommandData(rcd));
+            }
+
+            // 默认状态
+            if (data.DefaultStates != null)
+            {
+                foreach (StateData sd in data.DefaultStates)
+                {
+                    ShapeState s = new ShapeState();
+                    s.Name = sd.Name;
+                    s.FillColor = new XmlColor(Color.FromArgb(sd.ArgbFillColor));
+                    s.BorderColor = new XmlColor(Color.FromArgb(sd.ArgbBorderColor));
+                    s.TextColor = new XmlColor(Color.FromArgb(sd.ArgbTextColor));
+                    s.HeaderColor = new XmlColor(Color.FromArgb(sd.ArgbHeaderColor));
+                    s.Priority = sd.Priority;
+                    s.UseCustomRenderCommands = sd.UseCustomRenderCommands;
+
+                    if (sd.CustomRenderCommands != null)
+                    {
+                        foreach (RenderCommandData rcd in sd.CustomRenderCommands)
+                            s.CustomRenderCommands.Add(FromCommandData(rcd));
+                    }
+
+                    if (sd.Zones != null)
+                    {
+                        foreach (ZoneData zd in sd.Zones)
+                            s.CustomZones.Add(FromZoneData(zd));
+                    }
+
+                    st.DefaultStates.Add(s);
+                }
+            }
+
+            // Zone 列表
+            if (data.Zones != null)
+            {
+                foreach (ZoneData zd in data.Zones)
+                    st.Zones.Add(FromZoneData(zd));
+            }
+
+            // 自定义行为
+            if (data.CustomActions != null)
+            {
+                foreach (ActionData ad in data.CustomActions)
+                {
+                    ShapeAction action = FromActionData(ad);
+                    if (action != null)
+                        st.CustomActions.Add(action);
+                }
+            }
+
+            // 图片图层
+            if (data.ImageLayers != null)
+            {
+                foreach (ImageLayerData ild in data.ImageLayers)
+                {
+                    ImageLayer layer = FromImageLayerData(ild);
+                    if (layer != null)
+                        st.ImageLayers.Add(layer);
+                }
+            }
+
+            return st;
         }
 
         // =====================================================================

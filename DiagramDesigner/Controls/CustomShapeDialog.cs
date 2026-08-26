@@ -65,11 +65,20 @@ namespace DiagramDesigner.Controls
         private Button _btnDeleteZoneTB;
         private Button _btnBoolOp;
         private Button _btnMergePaths;
+        private Button _btnInsertImage;
         private ContextMenuStrip _boolOpMenu;
         private bool _suppressPathChange = false;
 
         // Zone 列表（每个状态独立）
         private List<ShapeZone> _zones = new List<ShapeZone>();
+
+        // 图片图层列表
+        private List<ImageLayer> _imageLayers = new List<ImageLayer>();
+        private int _selectedImageIndex = -1;  // 选中的图片图层索引
+        private bool _draggingImage = false;    // 是否正在拖拽图片
+        private bool _resizingImage = false;    // 是否正在缩放图片
+        private Point _imageDragStart;           // 拖拽起始位置
+        private RectangleF _imageDragStartBounds; // 拖拽起始时的图片边界
 
         // 信息窗格
         private Panel _panelInfo;
@@ -506,6 +515,12 @@ namespace DiagramDesigner.Controls
             _btnDeleteZoneTB = MakeSmallButton("-Z", "删除选中区域", bx, 0, 24, 24);
             _btnDeleteZoneTB.Click += new EventHandler(OnDeleteZone);
             _panelPathToolbar.Controls.Add(_btnDeleteZoneTB);
+            bx += 26;
+
+            // 插入图片按钮
+            _btnInsertImage = MakeSmallButton("IMG", "插入图片（PNG）", bx, 0, 34, 24);
+            _btnInsertImage.Click += new EventHandler(OnInsertImage);
+            _panelPathToolbar.Controls.Add(_btnInsertImage);
 
             // 构建布尔运算弹出菜单
             _boolOpMenu = new ContextMenuStrip();
@@ -628,19 +643,11 @@ namespace DiagramDesigner.Controls
         /// </summary>
         private void OnMergePaths(object sender, EventArgs e)
         {
-            System.Diagnostics.Debug.WriteLine("[Merge] OnMergePaths called, currentPathIdx=" + _currentPathIndex + ", pathsCount=" + _paths.Count);
-
             if (_currentPathIndex < 0 || _currentPathIndex >= _paths.Count)
-            {
-                System.Diagnostics.Debug.WriteLine("[Merge] early return: invalid currentPathIndex");
                 return;
-            }
             List<CurveVertex> currentPath = _paths[_currentPathIndex];
             if (currentPath == null || currentPath.Count < 3)
-            {
-                System.Diagnostics.Debug.WriteLine("[Merge] early return: currentPath invalid (count=" + (currentPath != null ? currentPath.Count : -1) + ")");
                 return;
-            }
 
             // 查找紧邻下方的非空路径
             int lowerIdx = -1;
@@ -653,12 +660,7 @@ namespace DiagramDesigner.Controls
                 }
             }
             if (lowerIdx < 0)
-            {
-                System.Diagnostics.Debug.WriteLine("[Merge] early return: no lower path found");
                 return;
-            }
-
-            System.Diagnostics.Debug.WriteLine("[Merge] currentPath vertices=" + currentPath.Count + ", lowerPath idx=" + lowerIdx + " vertices=" + _paths[lowerIdx].Count);
 
             List<CurveVertex> lowerPath = _paths[lowerIdx];
 
@@ -723,7 +725,6 @@ namespace DiagramDesigner.Controls
             mergeOps.Add(op);
             mergeOps.Add(BooleanOperation.None);
 
-            string mergeError = "";
             try
             {
                 mergedOuters = CurveAwareMerge.Merge(
@@ -731,32 +732,19 @@ namespace DiagramDesigner.Controls
                     minX - 10, minY - 10, maxX + 10, maxY + 10,
                     out mergedHolesPerOuter);
             }
-            catch (Exception ex) { mergedOuters = null; mergedHolesPerOuter = null; mergeError = "Exception: " + ex.Message; }
-
-            System.Diagnostics.Debug.WriteLine("[Merge] CurveAwareMerge result: " +
-                (mergedOuters != null ? mergedOuters.Count + " outers" : "null") +
-                ", diag: " + CurveAwareMerge.LastDebugInfo +
-                (mergeError.Length > 0 ? ", error: " + mergeError : ""));
+            catch { mergedOuters = null; mergedHolesPerOuter = null; }
 
             // 回退位图追踪（仅单外轮廓，无曲线保留）
             if (mergedOuters == null || mergedOuters.Count == 0)
             {
-                // 诊断：显示失败原因
-                string diag = mergeError;
-                if (string.IsNullOrEmpty(diag))
-                    diag = CurveAwareMerge.LastDebugInfo;
-                if (string.IsNullOrEmpty(diag))
-                    diag = "unknown";
-
                 List<PointF> outline = null;
-                string fallbackError = "";
                 try
                 {
                     List<Region> regions = new List<Region>();
                     regions.Add(resultRegion);
                     outline = TraceRegionOutline(regions, minX - 10, minY - 10, maxX + 10, maxY + 10);
                 }
-                catch (Exception ex2) { fallbackError = ex2.Message; }
+                catch { }
 
                 if (outline != null && outline.Count >= 3)
                 {
@@ -767,13 +755,6 @@ namespace DiagramDesigner.Controls
                     mergedOuters.Add(fallbackPath);
                     mergedHolesPerOuter = new List<List<List<CurveVertex>>>();
                     mergedHolesPerOuter.Add(new List<List<CurveVertex>>());
-                    System.Diagnostics.Debug.WriteLine("[Merge] Fallback (bitmap trace) succeeded: " + outline.Count + " points. CurveAwareMerge failed: " + diag);
-                }
-                else
-                {
-                    // 回退也失败，显示诊断信息
-                    string msg = "合并失败。\nCurveAwareMerge: " + diag + "\nFallback error: " + fallbackError;
-                    System.Windows.Forms.MessageBox.Show(msg, "合并诊断", System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Warning);
                 }
             }
 
@@ -789,8 +770,6 @@ namespace DiagramDesigner.Controls
                 // 保存下层路径的 BoolOp：合并后的路径继承它，以保持与更下方路径的运算链
                 BooleanOperation inheritedOp = (lowerIdx < _pathBoolOps.Count)
                     ? _pathBoolOps[lowerIdx] : BooleanOperation.None;
-
-                int pathsBefore = _paths.Count;
 
                 // 从高索引到低索引移除两条路径
                 _paths.RemoveAt(lowerIdx);
@@ -879,20 +858,12 @@ namespace DiagramDesigner.Controls
                 while (_pathBoolOps.Count > _paths.Count) _pathBoolOps.RemoveAt(_pathBoolOps.Count - 1);
                 while (_pathIsShape.Count < _paths.Count) _pathIsShape.Add(true);
                 while (_pathIsShape.Count > _paths.Count) _pathIsShape.RemoveAt(_pathIsShape.Count - 1);
-
-                int totalHoles = 0;
-                if (mergedHolesPerOuter != null)
-                    foreach (var hl in mergedHolesPerOuter)
-                        if (hl != null) totalHoles += hl.Count;
-
-                System.Diagnostics.Debug.WriteLine("Merge OK: " + insertedCount + " paths inserted, "
-                    + totalHoles + " holes, paths " + pathsBefore + "→" + _paths.Count);
             }
             }
             catch (Exception ex)
             {
                 System.Windows.Forms.MessageBox.Show(
-                    "合并插入阶段异常: " + ex.Message + "\n" + ex.StackTrace,
+                    "合并插入阶段异常: " + ex.Message,
                     "合并异常", System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Error);
             }
 
@@ -1331,6 +1302,13 @@ namespace DiagramDesigner.Controls
                     _actions.Add(copy);
                 }
                 RefreshActionList();
+            }
+
+            // 加载图片图层
+            if (st.ImageLayers != null)
+            {
+                foreach (ImageLayer il in st.ImageLayers)
+                    _imageLayers.Add(il.Clone());
             }
         }
 
@@ -2209,6 +2187,7 @@ namespace DiagramDesigner.Controls
             {
                 RenderPreview(g, canvasW, canvasH);
                 RenderZonesAndInfo(g, canvasW, canvasH);
+                RenderImageLayers(g);
                 return;
             }
 
@@ -2317,6 +2296,9 @@ namespace DiagramDesigner.Controls
 
             // 绘制框选矩形 + Zone + 信息标注
             RenderZonesAndInfo(g, canvasW, canvasH);
+
+            // 绘制图片图层（在路径和 Zone 之上）
+            RenderImageLayers(g);
         }
 
         /// <summary>预览复选框变更：重绘画布</summary>
@@ -2567,6 +2549,7 @@ namespace DiagramDesigner.Controls
                 else if (zone.IsMemberZone) label += " [成员]";
                 else if (zone.IsClickZone) label += " [点击]";
                 else if (zone.IsConnectionZone) label += " [连接]";
+                else if (zone.IsScalableZone) label += " [可缩放]";
                 using (Font font = new Font("Microsoft YaHei", 7.5f))
                 using (Brush brush = new SolidBrush(borderC))
                 {
@@ -2648,7 +2631,29 @@ namespace DiagramDesigner.Controls
         {
             // 画布内有 20px 边距，模拟图形边界
             RectangleF shapeBounds = new RectangleF(20, 20, canvasW - 40, canvasH - 40);
-            // 预览中使用画布尺寸作为参考尺寸
+
+            // 可缩放区域使用九宫格差分缩放逻辑预览
+            // 在编辑器中参考尺寸 = 画布图形区域尺寸，所以区域显示与归一化坐标一致
+            if (zone.IsScalableZone)
+            {
+                float refW = canvasW - 40;
+                float refH = canvasH - 40;
+
+                float zX = zone.X, zY = zone.Y, zW = zone.Width, zH = zone.Height;
+                float leftMargin = zX * refW;
+                float topMargin = zY * refH;
+                float rightMargin = (1f - zX - zW) * refW;
+                float bottomMargin = (1f - zY - zH) * refH;
+
+                float actualX = shapeBounds.X + leftMargin;
+                float actualY = shapeBounds.Y + topMargin;
+                float actualW = Math.Max(1f, shapeBounds.Width - leftMargin - rightMargin);
+                float actualH = Math.Max(1f, shapeBounds.Height - topMargin - bottomMargin);
+
+                return new RectangleF(actualX, actualY, actualW, actualH);
+            }
+
+            // 其他 Zone 使用标准锚定逻辑
             return zone.GetAnchoredBounds(shapeBounds, canvasW - 40, canvasH - 40);
         }
 
@@ -2692,11 +2697,56 @@ namespace DiagramDesigner.Controls
             return -1;
         }
 
+        /// <summary>命中测试图片图层（从顶层到底层）</summary>
+        private int HitTestImage(Point pt)
+        {
+            for (int i = _imageLayers.Count - 1; i >= 0; i--)
+            {
+                if (!_imageLayers[i].Visible) continue;
+                RectangleF ir = GetImageBounds(_imageLayers[i]);
+                if (ir.Contains(pt))
+                    return i;
+            }
+            return -1;
+        }
+
+        /// <summary>命中测试图片图层手柄（0~3 角点，-1 = 未命中）</summary>
+        private int HitTestImageHandle(Point pt, RectangleF bounds)
+        {
+            float[] xs = { bounds.Left, bounds.Right };
+            float[] ys = { bounds.Top, bounds.Bottom };
+            for (int yi = 0; yi < 2; yi++)
+            {
+                for (int xi = 0; xi < 2; xi++)
+                {
+                    RectangleF handle = new RectangleF(xs[xi] - 5, ys[yi] - 5, 10, 10);
+                    if (handle.Contains(pt))
+                        return yi * 2 + xi;
+                }
+            }
+            return -1;
+        }
+
         private void OnCanvasMouseDown(object sender, MouseEventArgs e)
         {
             // 右键顶点：切换句柄状态 None → Symmetric → Asymmetric → None
+            // 右键图片：删除选中的图片图层
             if (e.Button == MouseButtons.Right)
             {
+                // 右键图片：删除
+                int imgHit = HitTestImage(e.Location);
+                if (imgHit >= 0)
+                {
+                    if (MessageBox.Show("确定删除此图片图层？", "确认删除",
+                        MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                    {
+                        _imageLayers.RemoveAt(imgHit);
+                        _selectedImageIndex = -1;
+                        _canvasPanel.Invalidate();
+                    }
+                    return;
+                }
+
                 int hitIdx = HitTestVertex(e.Location);
                 if (hitIdx >= 0)
                 {
@@ -2731,6 +2781,40 @@ namespace DiagramDesigner.Controls
                 float canvasW = (float)_canvasPanel.Width;
                 float canvasH = (float)_canvasPanel.Height;
                 bool ctrlKey = (Control.ModifierKeys & Keys.Control) == Keys.Control;
+
+                // 优先检查图片图层手柄（选中的图片）
+                if (_selectedImageIndex >= 0 && _selectedImageIndex < _imageLayers.Count)
+                {
+                    RectangleF ir = GetImageBounds(_imageLayers[_selectedImageIndex]);
+                    if (HitTestImageHandle(e.Location, ir) >= 0)
+                    {
+                        _resizingImage = true;
+                        _imageDragStart = e.Location;
+                        _imageDragStartBounds = ir;
+                        _canvasPanel.Cursor = Cursors.SizeNWSE;
+                        return;
+                    }
+                }
+
+                // 检查图片图层内部点击
+                int imgHit = HitTestImage(e.Location);
+                if (imgHit >= 0)
+                {
+                    _selectedImageIndex = imgHit;
+                    _selectedZoneIndex = -1;
+                    _draggingImage = true;
+                    _imageDragStart = e.Location;
+                    _imageDragStartBounds = GetImageBounds(_imageLayers[imgHit]);
+                    _canvasPanel.Invalidate();
+                    return;
+                }
+
+                // 取消图片选中
+                if (_selectedImageIndex >= 0)
+                {
+                    _selectedImageIndex = -1;
+                    _canvasPanel.Invalidate();
+                }
 
                 // 优先检查 Zone 手柄（选中的 Zone）
                 if (_selectedZoneIndex >= 0 && _selectedZoneIndex < _zones.Count)
@@ -2837,6 +2921,47 @@ namespace DiagramDesigner.Controls
             float canvasW = (float)_canvasPanel.Width;
             float canvasH = (float)_canvasPanel.Height;
 
+            // 图片图层拖拽移动
+            if (_draggingImage && _selectedImageIndex >= 0 && _selectedImageIndex < _imageLayers.Count)
+            {
+                ImageLayer layer = _imageLayers[_selectedImageIndex];
+                float dx = (e.X - _imageDragStart.X) / canvasW;
+                float dy = (e.Y - _imageDragStart.Y) / canvasH;
+                layer.X = Math.Max(0f, Math.Min(1f - layer.Width, _imageDragStartBounds.X / canvasW + dx));
+                layer.Y = Math.Max(0f, Math.Min(1f - layer.Height, _imageDragStartBounds.Y / canvasH + dy));
+                _canvasPanel.Invalidate();
+                return;
+            }
+
+            // 图片图层缩放调整
+            if (_resizingImage && _selectedImageIndex >= 0 && _selectedImageIndex < _imageLayers.Count)
+            {
+                ImageLayer layer = _imageLayers[_selectedImageIndex];
+                float dx = (e.X - _imageDragStart.X) / canvasW;
+                float dy = (e.Y - _imageDragStart.Y) / canvasH;
+
+                // 对角缩放：以左上角为锚点
+                float newW = Math.Max(0.02f, _imageDragStartBounds.Width / canvasW + dx);
+                float newH = Math.Max(0.02f, _imageDragStartBounds.Height / canvasH + dy);
+
+                // 保持宽高比（Shift 键不约束）
+                if ((Control.ModifierKeys & Keys.Shift) != Keys.Shift)
+                {
+                    float ratio = _imageDragStartBounds.Width / _imageDragStartBounds.Height;
+                    if (newW / newH > ratio)
+                        newW = newH * ratio;
+                    else
+                        newH = newW / ratio;
+                }
+
+                layer.X = _imageDragStartBounds.X / canvasW;
+                layer.Y = _imageDragStartBounds.Y / canvasH;
+                layer.Width = Math.Min(1f - layer.X, newW);
+                layer.Height = Math.Min(1f - layer.Y, newH);
+                _canvasPanel.Invalidate();
+                return;
+            }
+
             // Zone 拖拽调整大小（约束在图形多边形内）
             if (_zoneDragMode == 2 && _selectedZoneIndex >= 0 && _selectedZoneIndex < _zones.Count)
             {
@@ -2886,24 +3011,28 @@ namespace DiagramDesigner.Controls
                     if (zone.Y < 0f) zone.Y = 0f;
                 }
 
-                // 约束在图形多边形内
-                RectangleF shapeBounds = new RectangleF(20, 20, canvasW - 40, canvasH - 40);
-                RectangleF zr = zone.GetAnchoredBounds(shapeBounds, canvasW - 40, canvasH - 40);
-                GraphicsPath shapePath = GetShapePolygonPath();
-                if (shapePath != null)
+                // 可缩放区域跳过多边形约束检查
+                if (!zone.IsScalableZone)
                 {
-                    PointF[] corners = GetZoneCorners(zr);
-                    bool allInside = true;
-                    foreach (PointF c in corners)
+                    // 约束在图形多边形内
+                    RectangleF shapeBounds = new RectangleF(20, 20, canvasW - 40, canvasH - 40);
+                    RectangleF zr = zone.GetAnchoredBounds(shapeBounds, canvasW - 40, canvasH - 40);
+                    GraphicsPath shapePath = GetShapePolygonPath();
+                    if (shapePath != null)
                     {
-                        if (!shapePath.IsVisible(c)) { allInside = false; break; }
+                        PointF[] corners = GetZoneCorners(zr);
+                        bool allInside = true;
+                        foreach (PointF c in corners)
+                        {
+                            if (!shapePath.IsVisible(c)) { allInside = false; break; }
+                        }
+                        if (!allInside)
+                        {
+                            zone.X = origX; zone.Y = origY;
+                            zone.Width = origW; zone.Height = origH;
+                        }
+                        shapePath.Dispose();
                     }
-                    if (!allInside)
-                    {
-                        zone.X = origX; zone.Y = origY;
-                        zone.Width = origW; zone.Height = origH;
-                    }
-                    shapePath.Dispose();
                 }
 
                 _zoneDragStart = e.Location;
@@ -2919,17 +3048,29 @@ namespace DiagramDesigner.Controls
                 float dy = e.Y - _zoneDragStart.Y;
                 float shapeW = canvasW - 40;
                 float shapeH = canvasH - 40;
-                
+
                 // 保存原始位置，用于约束回退
                 float origX = zone.X;
                 float origY = zone.Y;
-                
+
                 zone.X += dx / shapeW;
                 zone.Y += dy / shapeH;
-                
-                // 约束在图形边界内
-                ConstrainZoneToShape(zone, canvasW, canvasH, origX, origY);
-                
+
+                // 可缩放区域不做多边形约束（其定位逻辑不同于普通 Zone）
+                if (!zone.IsScalableZone)
+                {
+                    // 约束在图形边界内
+                    ConstrainZoneToShape(zone, canvasW, canvasH, origX, origY);
+                }
+                else
+                {
+                    // 仅约束在 0~1 范围内
+                    if (zone.X < 0f) zone.X = 0f;
+                    if (zone.Y < 0f) zone.Y = 0f;
+                    if (zone.X + zone.Width > 1f) zone.X = 1f - zone.Width;
+                    if (zone.Y + zone.Height > 1f) zone.Y = 1f - zone.Height;
+                }
+
                 _zoneDragStart = e.Location;
                 _canvasPanel.Invalidate();
                 return;
@@ -2984,6 +3125,23 @@ namespace DiagramDesigner.Controls
             }
             else if (!_isGroupDragging && !_isBoxSelecting)
             {
+                // 图片图层悬停光标
+                if (_selectedImageIndex >= 0 && _selectedImageIndex < _imageLayers.Count)
+                {
+                    RectangleF ir = GetImageBounds(_imageLayers[_selectedImageIndex]);
+                    if (HitTestImageHandle(e.Location, ir) >= 0)
+                    {
+                        _canvasPanel.Cursor = Cursors.SizeNWSE;
+                        return;
+                    }
+                }
+                int imgHover = HitTestImage(e.Location);
+                if (imgHover >= 0)
+                {
+                    _canvasPanel.Cursor = Cursors.SizeAll;
+                    return;
+                }
+
                 // 更新鼠标样式
                 if (_selectedZoneIndex >= 0 && _selectedZoneIndex < _zones.Count)
                 {
@@ -3015,6 +3173,14 @@ namespace DiagramDesigner.Controls
 
         private void OnCanvasMouseUp(object sender, MouseEventArgs e)
         {
+            // 图片图层拖拽/缩放结束
+            if (_draggingImage || _resizingImage)
+            {
+                _draggingImage = false;
+                _resizingImage = false;
+                _canvasPanel.Cursor = Cursors.Default;
+            }
+
             if (_zoneDragMode != 0)
             {
                 _zoneDragMode = 0;
@@ -3328,6 +3494,7 @@ namespace DiagramDesigner.Controls
         /// <summary>
         /// 约束 Zone 在图形多边形边界内。
         /// 检查 Zone 四角是否在多边形内，若超出则回退到原始位置。
+        /// 若 Zone 尺寸过大无法完全放入多边形，则放宽为仅检查中心点。
         /// </summary>
         private void ConstrainZoneToShape(ShapeZone zone, float canvasW, float canvasH, float origX, float origY)
         {
@@ -3341,20 +3508,28 @@ namespace DiagramDesigner.Controls
             // 检查 Zone 四角是否在多边形内
             PointF[] corners = GetZoneCorners(zr);
             bool allInside = true;
+            int insideCount = 0;
             foreach (PointF c in corners)
             {
                 if (!shapePath.IsVisible(c))
                 {
                     allInside = false;
-                    break;
+                }
+                else
+                {
+                    insideCount++;
                 }
             }
 
             if (!allInside)
             {
-                // 回退到原始位置
-                zone.X = origX;
-                zone.Y = origY;
+                // 如果至少有2个角在多边形内，允许移动（放宽约束）
+                // 如果完全没有角在内，回退到原始位置
+                if (insideCount == 0)
+                {
+                    zone.X = origX;
+                    zone.Y = origY;
+                }
             }
             shapePath.Dispose();
         }
@@ -3560,6 +3735,7 @@ namespace DiagramDesigner.Controls
                     else if (z.IsMemberZone) flag = " [成员]";
                     else if (z.IsClickZone) flag = " [点击]";
                     else if (z.IsConnectionZone) flag = " [连接]";
+                    else if (z.IsScalableZone) flag = " [可缩放]";
                     _cmbPathSelect.Items.Add(string.Format("◈ {0}{1}", z.Name, flag));
                 }
 
@@ -3596,17 +3772,19 @@ namespace DiagramDesigner.Controls
         private void UpdatePathToolbarMode()
         {
             bool isZone = (_selectedZoneIndex >= 0);
+            bool isImage = (_selectedImageIndex >= 0);
+            bool isPathMode = !isZone && !isImage;
             // 路径操作按钮
-            _btnMovePathUp.Enabled = !isZone && _currentPathIndex > 0;
-            _btnMovePathDown.Enabled = !isZone && _currentPathIndex < _paths.Count - 1;
+            _btnMovePathUp.Enabled = isPathMode && _currentPathIndex > 0;
+            _btnMovePathDown.Enabled = isPathMode && _currentPathIndex < _paths.Count - 1;
             _btnNewPath.Enabled = true;
-            _btnDeletePath.Enabled = !isZone;
+            _btnDeletePath.Enabled = isPathMode;
             // Zone 操作按钮
             _btnAddZoneTB.Enabled = true;
             _btnEditZoneTB.Enabled = isZone;
             _btnDeleteZoneTB.Enabled = isZone;
             // 布尔运算按钮：路径模式启用，当前路径有下方非空路径时才有意义
-            bool hasLower = !isZone && HasLowerValidPath();
+            bool hasLower = isPathMode && HasLowerValidPath();
             _btnBoolOp.Enabled = hasLower;
             // 合并按钮：当前路径有下方非空路径时启用
             _btnMergePaths.Enabled = hasLower;
@@ -3685,6 +3863,21 @@ namespace DiagramDesigner.Controls
                         return; // 添加模式下不处理删除
                     if (dlg.ResultZone != null)
                     {
+                        // 可缩放区域单一性校验
+                        if (dlg.ResultZone.IsScalableZone)
+                        {
+                            foreach (ShapeZone z in _zones)
+                            {
+                                if (z.IsScalableZone)
+                                {
+                                    MessageBox.Show(
+                                        "每个元件只允许1个可缩放区域，已有\"" + z.Name + "\"。",
+                                        "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                                    return;
+                                }
+                            }
+                        }
+
                         _zones.Add(dlg.ResultZone);
                         _selectedZoneIndex = _zones.Count - 1;
                         RefreshPathCombo();
@@ -3710,6 +3903,21 @@ namespace DiagramDesigner.Controls
                     }
                     else if (dlg.ResultZone != null)
                     {
+                        // 可缩放区域单一性校验（编辑模式）
+                        if (dlg.ResultZone.IsScalableZone)
+                        {
+                            for (int i = 0; i < _zones.Count; i++)
+                            {
+                                if (i == idx) continue;
+                                if (_zones[i].IsScalableZone)
+                                {
+                                    MessageBox.Show(
+                                        "每个元件只允许1个可缩放区域，已有\"" + _zones[i].Name + "\"。",
+                                        "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                                    return;
+                                }
+                            }
+                        }
                         _zones[idx] = dlg.ResultZone;
                     }
                     RefreshPathCombo();
@@ -3741,6 +3949,134 @@ namespace DiagramDesigner.Controls
             foreach (ShapeZone z in src)
                 result.Add(z.Clone());
             return result;
+        }
+
+        #endregion
+
+        #region 编辑器 — 图片图层
+
+        /// <summary>插入图片：从文件选择 PNG 图片，作为图层添加到画布</summary>
+        private void OnInsertImage(object sender, EventArgs e)
+        {
+            using (OpenFileDialog ofd = new OpenFileDialog())
+            {
+                ofd.Title = "插入图片";
+                ofd.Filter = "PNG 图片 (*.png)|*.png";
+                if (ofd.ShowDialog() != DialogResult.OK)
+                    return;
+
+                try
+                {
+                    byte[] pngBytes = System.IO.File.ReadAllBytes(ofd.FileName);
+                    string name = System.IO.Path.GetFileNameWithoutExtension(ofd.FileName);
+                    ImageLayer layer = ImageLayer.FromPngBytes(pngBytes, name);
+
+                    // 默认放置在画布中心，尺寸按宽高比自适应
+                    float canvasW = (float)_canvasPanel.Width;
+                    float canvasH = (float)_canvasPanel.Height;
+                    float imgW = 0.3f;
+                    float imgH = imgW / layer.AspectRatio;
+                    if (imgH > 0.5f) { imgH = 0.5f; imgW = imgH * layer.AspectRatio; }
+                    layer.X = (1f - imgW) / 2f;
+                    layer.Y = (1f - imgH) / 2f;
+                    layer.Width = imgW;
+                    layer.Height = imgH;
+
+                    _imageLayers.Add(layer);
+                    _selectedImageIndex = _imageLayers.Count - 1;
+                    _selectedZoneIndex = -1;
+                    _canvasPanel.Invalidate();
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("插入图片失败：" + ex.Message, "错误",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+        }
+
+        /// <summary>计算图片在画布上的绝对矩形</summary>
+        private RectangleF GetImageBounds(ImageLayer layer)
+        {
+            float canvasW = (float)_canvasPanel.Width;
+            float canvasH = (float)_canvasPanel.Height;
+            return new RectangleF(
+                layer.X * canvasW,
+                layer.Y * canvasH,
+                layer.Width * canvasW,
+                layer.Height * canvasH);
+        }
+
+        /// <summary>渲染所有图片图层</summary>
+        private void RenderImageLayers(Graphics g)
+        {
+            float canvasW = (float)_canvasPanel.Width;
+            float canvasH = (float)_canvasPanel.Height;
+
+            for (int i = 0; i < _imageLayers.Count; i++)
+            {
+                ImageLayer layer = _imageLayers[i];
+                if (!layer.Visible) continue;
+
+                Image img = layer.ToImage();
+                if (img == null) continue;
+
+                RectangleF bounds = new RectangleF(
+                    layer.X * canvasW,
+                    layer.Y * canvasH,
+                    layer.Width * canvasW,
+                    layer.Height * canvasH);
+
+                g.DrawImage(img, bounds);
+                img.Dispose();
+
+                // 选中状态：绘制边框和控制手柄
+                if (i == _selectedImageIndex)
+                {
+                    using (Pen pen = new Pen(Color.FromArgb(0, 120, 215), 1.5f))
+                    {
+                        pen.DashStyle = DashStyle.Dash;
+                        g.DrawRectangle(pen, bounds.X, bounds.Y, bounds.Width, bounds.Height);
+                    }
+                    // 四角控制点
+                    float[] xs = { bounds.Left, bounds.Right };
+                    float[] ys = { bounds.Top, bounds.Bottom };
+                    foreach (float hx in xs)
+                        foreach (float hy in ys)
+                        {
+                            RectangleF handle = new RectangleF(hx - 4, hy - 4, 8, 8);
+                            using (Brush b = new SolidBrush(Color.FromArgb(0, 120, 215)))
+                                g.FillRectangle(b, handle);
+                            using (Pen p = new Pen(Color.White, 1f))
+                                g.DrawRectangle(p, handle.X, handle.Y, handle.Width, handle.Height);
+                        }
+                }
+            }
+        }
+
+        /// <summary>
+        /// 键盘快捷键处理：
+        ///   Delete — 删除当前选中的图片图层
+        ///   Escape — 取消图片选中
+        /// </summary>
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == Keys.Delete && _selectedImageIndex >= 0 && _selectedImageIndex < _imageLayers.Count)
+            {
+                _imageLayers.RemoveAt(_selectedImageIndex);
+                _selectedImageIndex = -1;
+                _canvasPanel.Invalidate();
+                UpdatePathToolbarMode();
+                return true;
+            }
+            if (keyData == Keys.Escape && _selectedImageIndex >= 0)
+            {
+                _selectedImageIndex = -1;
+                _canvasPanel.Invalidate();
+                UpdatePathToolbarMode();
+                return true;
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
         }
 
         #endregion
@@ -3979,6 +4315,13 @@ namespace DiagramDesigner.Controls
             // 根据 Zone 自动生成系统行为
             st.GenerateSystemBehaviors();
 
+            // 复制图片图层
+            if (_imageLayers != null && _imageLayers.Count > 0)
+            {
+                foreach (ImageLayer il in _imageLayers)
+                    st.ImageLayers.Add(il.Clone());
+            }
+
             _resultShapeType = st;
         }
 
@@ -4003,11 +4346,7 @@ namespace DiagramDesigner.Controls
         private NumericUpDown _numH;
         private Label _lblX;
         private Label _lblY;
-        private CheckBox _chkShowBorder;
-        private CheckBox _chkTitleZone;
-        private CheckBox _chkMemberZone;
-        private CheckBox _chkClickZone;
-        private CheckBox _chkConnectionZone;
+        private ComboBox _cmbVisibility;
 
         // 连接区域属性
         private CheckBox _chkCanStart;
@@ -4053,8 +4392,8 @@ namespace DiagramDesigner.Controls
             this.Controls.Add(_txtName);
             y += 32;
 
-            // 布局（中文释义）
-            AddLabel("布局：", y, lblW);
+            // 类型（中文释义）
+            AddLabel("类型：", y, lblW);
             _cmbLayout = new ComboBox();
             _cmbLayout.DropDownStyle = ComboBoxStyle.DropDownList;
             _cmbLayout.Location = new Point(xVal, y);
@@ -4066,6 +4405,7 @@ namespace DiagramDesigner.Controls
             _cmbLayout.Items.Add("成员 — 显示成员列表");
             _cmbLayout.Items.Add("点击 — 点击后触发行为");
             _cmbLayout.Items.Add("连接 — 作为连线起点/终点");
+            _cmbLayout.Items.Add("可缩放 — 定义元件缩放区间");
             _cmbLayout.SelectedIndex = (editZone != null) ? (int)editZone.Layout : 0;
             _cmbLayout.SelectedIndexChanged += new EventHandler(OnLayoutChanged);
             this.Controls.Add(_cmbLayout);
@@ -4139,47 +4479,18 @@ namespace DiagramDesigner.Controls
             this.Controls.Add(_btnFillColor);
             y += 32;
 
-            // 类型复选框
-            AddLabel("类型：", y, lblW);
-            _chkTitleZone = new CheckBox();
-            _chkTitleZone.Text = "标题区域";
-            _chkTitleZone.Location = new Point(xVal, y);
-            _chkTitleZone.Size = new Size(85, 22);
-            _chkTitleZone.Checked = (editZone != null) ? editZone.IsTitleZone : false;
-            _chkTitleZone.CheckedChanged += new EventHandler(OnZoneTypeChanged);
-            this.Controls.Add(_chkTitleZone);
-
-            _chkMemberZone = new CheckBox();
-            _chkMemberZone.Text = "成员区域";
-            _chkMemberZone.Location = new Point(xVal + 90, y);
-            _chkMemberZone.Size = new Size(85, 22);
-            _chkMemberZone.Checked = (editZone != null) ? editZone.IsMemberZone : false;
-            _chkMemberZone.CheckedChanged += new EventHandler(OnZoneTypeChanged);
-            this.Controls.Add(_chkMemberZone);
-
-            _chkClickZone = new CheckBox();
-            _chkClickZone.Text = "点击区域";
-            _chkClickZone.Location = new Point(xVal + 180, y);
-            _chkClickZone.Size = new Size(85, 22);
-            _chkClickZone.Checked = (editZone != null) ? editZone.IsClickZone : false;
-            _chkClickZone.CheckedChanged += new EventHandler(OnZoneTypeChanged);
-            this.Controls.Add(_chkClickZone);
-
-            _chkConnectionZone = new CheckBox();
-            _chkConnectionZone.Text = "连接区域";
-            _chkConnectionZone.Location = new Point(xVal, y + 24);
-            _chkConnectionZone.Size = new Size(85, 22);
-            _chkConnectionZone.Checked = (editZone != null) ? editZone.IsConnectionZone : false;
-            _chkConnectionZone.CheckedChanged += new EventHandler(OnZoneTypeChanged);
-            this.Controls.Add(_chkConnectionZone);
-
-            _chkShowBorder = new CheckBox();
-            _chkShowBorder.Text = "显示边框";
-            _chkShowBorder.Location = new Point(xVal + 90, y + 24);
-            _chkShowBorder.Size = new Size(85, 22);
-            _chkShowBorder.Checked = (editZone != null) ? editZone.ShowBorder : false;
-            this.Controls.Add(_chkShowBorder);
-            y += 54;
+            // 可见性
+            AddLabel("可见性：", y, lblW);
+            _cmbVisibility = new ComboBox();
+            _cmbVisibility.DropDownStyle = ComboBoxStyle.DropDownList;
+            _cmbVisibility.Location = new Point(xVal, y);
+            _cmbVisibility.Size = new Size(valW, 22);
+            _cmbVisibility.Items.Add("隐藏 — 主画布不显示");
+            _cmbVisibility.Items.Add("设计时 — 仅设计模式显示");
+            _cmbVisibility.Items.Add("运行时 — 始终显示");
+            _cmbVisibility.SelectedIndex = (editZone != null) ? (int)editZone.Visibility : 0;
+            this.Controls.Add(_cmbVisibility);
+            y += 30;
 
             // 连接区域属性（仅当 IsConnectionZone 时显示）
             AddLabel("连线设置：", y, lblW);
@@ -4299,40 +4610,30 @@ namespace DiagramDesigner.Controls
             return lbl;
         }
 
-        /// <summary>布局变化时自动设置类型复选框</summary>
         private void OnLayoutChanged(object sender, EventArgs e)
         {
             int layoutIdx = _cmbLayout.SelectedIndex;
-            // 自动勾选对应类型
-            _chkTitleZone.Checked = (layoutIdx == (int)ZoneLayout.Title);
-            _chkMemberZone.Checked = (layoutIdx == (int)ZoneLayout.Member);
-            _chkClickZone.Checked = (layoutIdx == (int)ZoneLayout.Click);
-            _chkConnectionZone.Checked = (layoutIdx == (int)ZoneLayout.Connection);
-
             // 标题区域默认锚定为正中
             if (layoutIdx == (int)ZoneLayout.Title && _cmbAnchor.SelectedIndex == 0)
                 _cmbAnchor.SelectedIndex = (int)ZoneAnchor.MiddleCenter;
 
+            // 可缩放区域：设置合理的居中默认值
+            if (layoutIdx == (int)ZoneLayout.Scalable)
+            {
+                // 仅在新建模式（X=0, Y=0）下自动设置默认值
+                if (_numX.Value == 0m && _numY.Value == 0m)
+                {
+                    _numX.Value = 0.1m;
+                    _numY.Value = 0.1m;
+                    _numW.Value = 0.8m;
+                    _numH.Value = 0.8m;
+                    // 可缩放区域默认设计时可见
+                    _cmbVisibility.SelectedIndex = (int)ZoneVisibility.DesignTime;
+                }
+            }
+
             UpdateConnectionVisibility();
             UpdateXYLabels();
-        }
-
-        /// <summary>类型复选框变化时同步布局下拉</summary>
-        private void OnZoneTypeChanged(object sender, EventArgs e)
-        {
-            // 根据复选框状态更新布局下拉
-            if (_chkTitleZone.Checked)
-                _cmbLayout.SelectedIndex = (int)ZoneLayout.Title;
-            else if (_chkMemberZone.Checked)
-                _cmbLayout.SelectedIndex = (int)ZoneLayout.Member;
-            else if (_chkClickZone.Checked)
-                _cmbLayout.SelectedIndex = (int)ZoneLayout.Click;
-            else if (_chkConnectionZone.Checked)
-                _cmbLayout.SelectedIndex = (int)ZoneLayout.Connection;
-            else
-                _cmbLayout.SelectedIndex = (int)ZoneLayout.None;
-
-            UpdateConnectionVisibility();
         }
 
         /// <summary>锚定方式变化时更新 X/Y 标签和范围</summary>
@@ -4362,10 +4663,9 @@ namespace DiagramDesigner.Controls
             }
         }
 
-        /// <summary>连接区域属性仅当勾选连接区域时显示</summary>
         private void UpdateConnectionVisibility()
         {
-            bool showConn = _chkConnectionZone.Checked;
+            bool showConn = (_cmbLayout.SelectedIndex == (int)ZoneLayout.Connection);
             _chkCanStart.Visible = showConn;
             _chkCanEnd.Visible = showConn;
             _chkAllowSelfConnect.Visible = showConn;
@@ -4439,11 +4739,11 @@ namespace DiagramDesigner.Controls
                 ResultZone.Y = (float)_numY.Value;
                 ResultZone.Width = (float)_numW.Value;
                 ResultZone.Height = (float)_numH.Value;
-                ResultZone.ShowBorder = _chkShowBorder.Checked;
-                ResultZone.IsTitleZone = _chkTitleZone.Checked;
-                ResultZone.IsMemberZone = _chkMemberZone.Checked;
-                ResultZone.IsClickZone = _chkClickZone.Checked;
-                ResultZone.IsConnectionZone = _chkConnectionZone.Checked;
+                ResultZone.Visibility = (ZoneVisibility)_cmbVisibility.SelectedIndex;
+                ResultZone.IsTitleZone = ((ZoneLayout)_cmbLayout.SelectedIndex == ZoneLayout.Title);
+                ResultZone.IsMemberZone = ((ZoneLayout)_cmbLayout.SelectedIndex == ZoneLayout.Member);
+                ResultZone.IsClickZone = ((ZoneLayout)_cmbLayout.SelectedIndex == ZoneLayout.Click);
+                ResultZone.IsConnectionZone = ((ZoneLayout)_cmbLayout.SelectedIndex == ZoneLayout.Connection);
                 ResultZone.BorderColor = new XmlColor(_btnBorderColor.BackColor);
                 ResultZone.FillColor = new XmlColor(_btnFillColor.BackColor);
 

@@ -22,7 +22,9 @@ namespace DiagramDesigner.Core
         /// <summary>点击区域：点击后触发已注册的行为序列</summary>
         Click,
         /// <summary>连接区域：作为连线起点或终点，可限定线型及是否允许同元件内相连</summary>
-        Connection
+        Connection,
+        /// <summary>可缩放区域：定义元件的可缩放区间，元件缩放时对此区域的宽高进行变换</summary>
+        Scalable
     }
 
     /// <summary>
@@ -35,6 +37,20 @@ namespace DiagramDesigner.Core
         /// <summary>冻结边角：缩放时保持 Zone 的绝对像素尺寸不变，
         /// 常用于标题区域，使文字在缩放时不漂移</summary>
         Freeze
+    }
+
+    /// <summary>
+    /// Zone 可见性。控制 Zone 边框/填充等视觉指示在主画布上的显示时机。
+    /// 在图形编辑器中，Zone 始终可见，不受此设置影响。
+    /// </summary>
+    public enum ZoneVisibility
+    {
+        /// <summary>隐藏：主画布上不显示 Zone 视觉指示</summary>
+        Hidden,
+        /// <summary>设计时：仅在主画布设计模式下显示</summary>
+        DesignTime,
+        /// <summary>运行时：主画布设计模式和运行模式均显示</summary>
+        RunTime
     }
 
     /// <summary>
@@ -81,7 +97,7 @@ namespace DiagramDesigner.Core
         private float _y = 0f;
         private float _width = 1f;
         private float _height = 1f;
-        private bool _showBorder = false;
+        private ZoneVisibility _visibility = ZoneVisibility.Hidden;
         private XmlColor _borderColor = new XmlColor(Color.FromArgb(180, 180, 180));
         private XmlColor _fillColor = new XmlColor(Color.FromArgb(255, 248, 220, 220));
         private string _title = "";
@@ -165,11 +181,24 @@ namespace DiagramDesigner.Core
             set { _height = value; }
         }
 
-        /// <summary>是否显示 Zone 边框</summary>
+        /// <summary>
+        /// Zone 可见性。控制主画布上 Zone 视觉指示的显示时机。
+        /// 在图形编辑器中 Zone 始终可见，不受此设置影响。
+        /// </summary>
+        public ZoneVisibility Visibility
+        {
+            get { return _visibility; }
+            set { _visibility = value; }
+        }
+
+        /// <summary>
+        /// 是否显示 Zone 边框（向后兼容属性）。
+        /// 等价于 Visibility != Hidden。设置时 true → DesignTime，false → Hidden。
+        /// </summary>
         public bool ShowBorder
         {
-            get { return _showBorder; }
-            set { _showBorder = value; }
+            get { return _visibility != ZoneVisibility.Hidden; }
+            set { _visibility = value ? ZoneVisibility.DesignTime : ZoneVisibility.Hidden; }
         }
 
         /// <summary>边框颜色</summary>
@@ -221,6 +250,12 @@ namespace DiagramDesigner.Core
             set { _isConnectionZone = value; }
         }
 
+        /// <summary>标记为可缩放区域（从 Layout 派生）</summary>
+        public bool IsScalableZone
+        {
+            get { return _layout == ZoneLayout.Scalable; }
+        }
+
         /// <summary>Zone 内的绘制指令（如分隔线、背景等）</summary>
         public List<RenderCommand> RenderCommands
         {
@@ -269,10 +304,10 @@ namespace DiagramDesigner.Core
 
         #region 便捷判断
 
-        /// <summary>是否为特殊功能 Zone（标题/成员/点击/连接）</summary>
+        /// <summary>是否为特殊功能 Zone（标题/成员/点击/连接/可缩放）</summary>
         public bool IsFunctionalZone
         {
-            get { return _isTitleZone || _isMemberZone || _isClickZone || _isConnectionZone; }
+            get { return _isTitleZone || _isMemberZone || _isClickZone || _isConnectionZone || _layout == ZoneLayout.Scalable; }
         }
 
         #endregion
@@ -294,7 +329,7 @@ namespace DiagramDesigner.Core
             zone.Y = 0f;
             zone.Width = 1f;
             zone.Height = nameAreaTop;
-            zone.ShowBorder = false;
+            zone.Visibility = ZoneVisibility.Hidden;
             zone.IsTitleZone = true;
             return zone;
         }
@@ -342,7 +377,7 @@ namespace DiagramDesigner.Core
             zone.Y = nameAreaTop;
             zone.Width = 1f;
             zone.Height = 1f - nameAreaTop;
-            zone.ShowBorder = false;
+            zone.Visibility = ZoneVisibility.Hidden;
             zone.IsMemberZone = true;
             return zone;
         }
@@ -358,7 +393,7 @@ namespace DiagramDesigner.Core
             zone.Y = 0.1f;
             zone.Width = 0.3f;
             zone.Height = 0.2f;
-            zone.ShowBorder = true;
+            zone.Visibility = ZoneVisibility.DesignTime;
             zone.IsClickZone = true;
             return zone;
         }
@@ -374,11 +409,26 @@ namespace DiagramDesigner.Core
             zone.Y = 0f;
             zone.Width = 0.15f;
             zone.Height = 0.15f;
-            zone.ShowBorder = true;
+            zone.Visibility = ZoneVisibility.DesignTime;
             zone.IsConnectionZone = true;
             zone.CanStart = true;
             zone.CanEnd = true;
             zone.AllowSelfConnect = false;
+            return zone;
+        }
+
+        /// <summary>创建可缩放区域 Zone</summary>
+        public static ShapeZone CreateScalableZone(string name)
+        {
+            ShapeZone zone = new ShapeZone();
+            zone.Name = name;
+            zone.Layout = ZoneLayout.Scalable;
+            zone.Anchor = ZoneAnchor.Absolute;
+            zone.X = 0.1f;
+            zone.Y = 0.1f;
+            zone.Width = 0.8f;
+            zone.Height = 0.8f;
+            zone.Visibility = ZoneVisibility.DesignTime;
             return zone;
         }
 
@@ -500,7 +550,7 @@ namespace DiagramDesigner.Core
             clone._y = _y;
             clone._width = _width;
             clone._height = _height;
-            clone._showBorder = _showBorder;
+            clone._visibility = _visibility;
             clone._borderColor = new XmlColor(_borderColor.ToColor());
             clone._fillColor = new XmlColor(_fillColor.ToColor());
             clone._title = _title;

@@ -40,6 +40,7 @@ namespace DiagramDesigner.Core
         private bool _resizable = false;
         private List<ShapeAction> _customActions = new List<ShapeAction>();
         private List<ShapeZone> _zones = new List<ShapeZone>();
+        private List<ImageLayer> _imageLayers = new List<ImageLayer>();
 
         public string Name
         {
@@ -177,6 +178,13 @@ namespace DiagramDesigner.Core
             set { _zones = value; }
         }
 
+        /// <summary>图片图层列表</summary>
+        public List<ImageLayer> ImageLayers
+        {
+            get { return _imageLayers; }
+            set { _imageLayers = value; }
+        }
+
         public ShapeType() { }
 
         /// <summary>
@@ -304,7 +312,13 @@ namespace DiagramDesigner.Core
                 shape.FillColor = _defaultFillColor.ToColor();
                 shape.BorderColor = _defaultBorderColor.ToColor();
                 shape.TextColor = _defaultTextColor.ToColor();
-                shape.Resizable = _resizable;
+                // 有可缩放区域时自动启用缩放
+                bool hasScalable = false;
+                foreach (ShapeZone z in _zones)
+                {
+                    if (z.IsScalableZone) { hasScalable = true; break; }
+                }
+                shape.Resizable = _resizable || hasScalable;
                 shape.MemberAreaTop = _nameAreaTop;
                 shape.RefWidth = _defaultWidth;
                 shape.RefHeight = _defaultHeight;

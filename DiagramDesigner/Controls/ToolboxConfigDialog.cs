@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
 using System.Windows.Forms;
 using DiagramDesigner.Core;
+using DiagramDesigner.Serialization;
+using DiagramDesigner.Shapes;
 
 namespace DiagramDesigner.Controls
 {
@@ -17,6 +20,7 @@ namespace DiagramDesigner.Controls
         private Button _btnUp;
         private Button _btnDown;
         private Button _btnAddCustom;
+        private Button _btnImport;
         private Button _btnEdit;
         private Button _btnDelete;
         private Button _btnEnableAll;
@@ -38,7 +42,7 @@ namespace DiagramDesigner.Controls
             this.FormBorderStyle = FormBorderStyle.SizableToolWindow;
             this.MaximizeBox = false;
             this.MinimizeBox = false;
-            this.ClientSize = new Size(460, 420);
+            this.ClientSize = new Size(460, 458);
             this.Shown += new EventHandler(OnShown);
 
             _listTools = new CheckedListBox();
@@ -72,37 +76,44 @@ namespace DiagramDesigner.Controls
             _btnAddCustom.Click += new EventHandler(OnAddCustom);
             this.Controls.Add(_btnAddCustom);
 
+            _btnImport = new Button();
+            _btnImport.Text = "导入...";
+            _btnImport.Location = new Point(340, 120);
+            _btnImport.Size = new Size(110, 28);
+            _btnImport.Click += new EventHandler(OnImport);
+            this.Controls.Add(_btnImport);
+
             _btnEdit = new Button();
             _btnEdit.Text = "编辑...";
-            _btnEdit.Location = new Point(340, 120);
+            _btnEdit.Location = new Point(340, 158);
             _btnEdit.Size = new Size(110, 28);
             _btnEdit.Click += new EventHandler(OnEditCustom);
             this.Controls.Add(_btnEdit);
 
             _btnDelete = new Button();
             _btnDelete.Text = "删除";
-            _btnDelete.Location = new Point(340, 154);
+            _btnDelete.Location = new Point(340, 192);
             _btnDelete.Size = new Size(110, 28);
             _btnDelete.Click += new EventHandler(OnDeleteCustom);
             this.Controls.Add(_btnDelete);
 
             _btnEnableAll = new Button();
             _btnEnableAll.Text = "全部启用";
-            _btnEnableAll.Location = new Point(340, 192);
+            _btnEnableAll.Location = new Point(340, 230);
             _btnEnableAll.Size = new Size(110, 28);
             _btnEnableAll.Click += new EventHandler(OnEnableAll);
             this.Controls.Add(_btnEnableAll);
 
             _btnDisableAll = new Button();
             _btnDisableAll.Text = "全部禁用";
-            _btnDisableAll.Location = new Point(340, 226);
+            _btnDisableAll.Location = new Point(340, 264);
             _btnDisableAll.Size = new Size(110, 28);
             _btnDisableAll.Click += new EventHandler(OnDisableAll);
             this.Controls.Add(_btnDisableAll);
 
             Label lblHint = new Label();
             lblHint.Text = "提示：\n· 勾选 = 启用\n· 双击自定义项可编辑\n· 仅自定义工具可编辑删除";
-            lblHint.Location = new Point(340, 264);
+            lblHint.Location = new Point(340, 302);
             lblHint.Size = new Size(110, 80);
             lblHint.ForeColor = Color.FromArgb(100, 100, 100);
             this.Controls.Add(lblHint);
@@ -110,14 +121,14 @@ namespace DiagramDesigner.Controls
             _btnOk = new Button();
             _btnOk.Text = "确定";
             _btnOk.DialogResult = DialogResult.OK;
-            _btnOk.Location = new Point(270, 380);
+            _btnOk.Location = new Point(270, 418);
             _btnOk.Size = new Size(80, 28);
             this.Controls.Add(_btnOk);
 
             _btnCancel = new Button();
             _btnCancel.Text = "取消";
             _btnCancel.DialogResult = DialogResult.Cancel;
-            _btnCancel.Location = new Point(360, 380);
+            _btnCancel.Location = new Point(360, 418);
             _btnCancel.Size = new Size(80, 28);
             this.Controls.Add(_btnCancel);
 
@@ -252,6 +263,68 @@ namespace DiagramDesigner.Controls
 
                     _workingItems.Add(item);
                     _listTools.Items.Add("[自定义] " + st.Name, true);
+                    _listTools.SelectedIndex = _listTools.Items.Count - 1;
+                    OnListSelectedIndexChanged(null, null);
+                }
+            }
+        }
+
+        private void OnImport(object sender, EventArgs e)
+        {
+            using (OpenFileDialog ofd = new OpenFileDialog())
+            {
+                ofd.Title = "导入自定义图形";
+                ofd.Filter = "形状定义文件 (*.xml)|*.xml";
+                ofd.Multiselect = true;
+                if (ofd.ShowDialog() != DialogResult.OK)
+                    return;
+
+                int imported = 0;
+                foreach (string filePath in ofd.FileNames)
+                {
+                    try
+                    {
+                        ShapeType st = XmlShapeSerializer.DeserializeFromFile(filePath);
+                        if (st == null) continue;
+
+                        // 检查重名
+                        if (ShapeTypeRegistry.Instance.GetShapeType(st.Name) != null)
+                        {
+                            // 自动追加后缀
+                            string baseName = st.Name;
+                            int suffix = 2;
+                            while (ShapeTypeRegistry.Instance.GetShapeType(st.Name) != null)
+                            {
+                                st.Name = baseName + "_" + suffix.ToString();
+                                suffix++;
+                            }
+                        }
+
+                        st.Category = "自定义";
+                        ShapeTypeRegistry.Instance.Register(st);
+
+                        ToolboxItem item = new ToolboxItem();
+                        item.Name = st.Name;
+                        item.Category = "自定义";
+                        item.CreateShape = new CreateShapeHandler(st.CreateInstance);
+                        item.Visible = true;
+                        item.Icon = null;
+
+                        _workingItems.Add(item);
+                        _listTools.Items.Add("[自定义] " + st.Name, true);
+                        imported++;
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show(
+                            string.Format("导入文件 {0} 失败：\n{1}",
+                                System.IO.Path.GetFileName(filePath), ex.Message),
+                            "导入错误", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                }
+
+                if (imported > 0)
+                {
                     _listTools.SelectedIndex = _listTools.Items.Count - 1;
                     OnListSelectedIndexChanged(null, null);
                 }
