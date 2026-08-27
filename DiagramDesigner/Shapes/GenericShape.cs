@@ -34,6 +34,7 @@ namespace DiagramDesigner.Shapes
         private float _refWidth = 140f;
         private float _refHeight = 100f;
         private List<ShapeAction> _systemActions = new List<ShapeAction>();
+        private List<ImageLayer> _imageLayers = null;  // 按实例复制，避免编辑ShapeType时旧实例图片独立更新
 
         public string ShapeTypeName
         {
@@ -488,10 +489,20 @@ namespace DiagramDesigner.Shapes
                 DrawFallback(g, colors, scale);
             }
 
-            // 2. 渲染图片图层（从 ShapeType 定义获取，随元件边界缩放）
-            if (type != null && type.ImageLayers != null && type.ImageLayers.Count > 0)
+            // 2. 渲染图片图层（按实例复制，随元件边界缩放）
+            // 首次渲染时从 ShapeType 复制，之后保持实例独立副本
+            if (_imageLayers == null)
             {
-                foreach (ImageLayer imgLayer in type.ImageLayers)
+                _imageLayers = new List<ImageLayer>();
+                if (type != null && type.ImageLayers != null)
+                {
+                    foreach (ImageLayer il in type.ImageLayers)
+                        _imageLayers.Add(il.Clone());
+                }
+            }
+            if (_imageLayers.Count > 0)
+            {
+                foreach (ImageLayer imgLayer in _imageLayers)
                 {
                     if (!imgLayer.Visible) continue;
 

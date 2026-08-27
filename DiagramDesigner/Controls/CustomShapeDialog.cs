@@ -1352,6 +1352,25 @@ namespace DiagramDesigner.Controls
                     for (int i = 0; i < rc.PolygonPoints.Length; i++)
                         rcCopy.PolygonPoints[i] = rc.PolygonPoints[i];
                 }
+                // 曲线句柄数据（修复：弧线句柄点丢失问题）
+                if (rc.PolyHandleTypes != null)
+                {
+                    rcCopy.PolyHandleTypes = new HandleType[rc.PolyHandleTypes.Length];
+                    for (int i = 0; i < rc.PolyHandleTypes.Length; i++)
+                        rcCopy.PolyHandleTypes[i] = rc.PolyHandleTypes[i];
+                }
+                if (rc.PolyHandleIns != null)
+                {
+                    rcCopy.PolyHandleIns = new PointF[rc.PolyHandleIns.Length];
+                    for (int i = 0; i < rc.PolyHandleIns.Length; i++)
+                        rcCopy.PolyHandleIns[i] = rc.PolyHandleIns[i];
+                }
+                if (rc.PolyHandleOuts != null)
+                {
+                    rcCopy.PolyHandleOuts = new PointF[rc.PolyHandleOuts.Length];
+                    for (int i = 0; i < rc.PolyHandleOuts.Length; i++)
+                        rcCopy.PolyHandleOuts[i] = rc.PolyHandleOuts[i];
+                }
                 rcCopy.UseShapeColors = rc.UseShapeColors;
                 rcCopy.Fill = rc.Fill;
                 rcCopy.Stroke = rc.Stroke;
@@ -2948,10 +2967,18 @@ namespace DiagramDesigner.Controls
                 if ((Control.ModifierKeys & Keys.Shift) != Keys.Shift)
                 {
                     float ratio = _imageDragStartBounds.Width / _imageDragStartBounds.Height;
-                    if (newW / newH > ratio)
-                        newW = newH * ratio;
-                    else
-                        newH = newW / ratio;
+                    float startW = _imageDragStartBounds.Width / canvasW;
+                    float startH = _imageDragStartBounds.Height / canvasH;
+                    if (startW > 0.001f && startH > 0.001f)
+                    {
+                        // 使用比例变化量比较，尊重用户的主导拖拽方向
+                        float propW = newW / startW;
+                        float propH = newH / startH;
+                        if (propW > propH)
+                            newH = newW / ratio;
+                        else
+                            newW = newH * ratio;
+                    }
                 }
 
                 layer.X = _imageDragStartBounds.X / canvasW;
@@ -3692,19 +3719,30 @@ namespace DiagramDesigner.Controls
                 return;
 
             int zoneCount = _zones.Count;
+            int pathCount = _paths.Count;
             if (idx < zoneCount)
             {
                 // 选中了 Zone
                 _selectedZoneIndex = idx;
+                _selectedImageIndex = -1;
                 _selectedVertices.Clear();
                 _dragIndex = -1;
             }
-            else
+            else if (idx < zoneCount + pathCount)
             {
                 // 选中了路径
                 _selectedZoneIndex = -1;
+                _selectedImageIndex = -1;
                 _currentPathIndex = idx - zoneCount;
                 _selectedVertices.Clear();
+            }
+            else
+            {
+                // 选中了图片图层
+                _selectedZoneIndex = -1;
+                _selectedImageIndex = idx - zoneCount - pathCount;
+                _selectedVertices.Clear();
+                _dragIndex = -1;
             }
             UpdatePathToolbarMode();
             _canvasPanel.Invalidate();
@@ -3746,10 +3784,24 @@ namespace DiagramDesigner.Controls
                     _cmbPathSelect.Items.Add(string.Format("▲ 路径 {0} ({1})", i + 1, vc));
                 }
 
+                // 图片图层项
+                for (int i = 0; i < _imageLayers.Count; i++)
+                {
+                    string iname = _imageLayers[i].Name;
+                    if (string.IsNullOrEmpty(iname)) iname = "图片";
+                    _cmbPathSelect.Items.Add(string.Format("🖼 {0}", iname));
+                }
+
                 // 设置选中项
                 if (_selectedZoneIndex >= 0 && _selectedZoneIndex < _zones.Count)
                 {
                     _cmbPathSelect.SelectedIndex = _selectedZoneIndex;
+                }
+                else if (_selectedImageIndex >= 0 && _selectedImageIndex < _imageLayers.Count)
+                {
+                    int imgSelIdx = _zones.Count + _paths.Count + _selectedImageIndex;
+                    if (imgSelIdx < _cmbPathSelect.Items.Count)
+                        _cmbPathSelect.SelectedIndex = imgSelIdx;
                 }
                 else
                 {
@@ -3931,14 +3983,10 @@ namespace DiagramDesigner.Controls
             int idx = _selectedZoneIndex;
             if (idx < 0 || idx >= _zones.Count)
                 return;
-            if (MessageBox.Show(string.Format("确定删除区域 \"{0}\"？", _zones[idx].Name),
-                "确认删除", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
-            {
-                _zones.RemoveAt(idx);
-                _selectedZoneIndex = -1;
-                RefreshPathCombo();
-                _canvasPanel.Invalidate();
-            }
+            _zones.RemoveAt(idx);
+            _selectedZoneIndex = -1;
+            RefreshPathCombo();
+            _canvasPanel.Invalidate();
         }
 
         private List<ShapeZone> CloneShapeZones(List<ShapeZone> src)
@@ -3985,6 +4033,7 @@ namespace DiagramDesigner.Controls
                     _imageLayers.Add(layer);
                     _selectedImageIndex = _imageLayers.Count - 1;
                     _selectedZoneIndex = -1;
+                    RefreshPathCombo();
                     _canvasPanel.Invalidate();
                 }
                 catch (Exception ex)
@@ -4065,6 +4114,7 @@ namespace DiagramDesigner.Controls
             {
                 _imageLayers.RemoveAt(_selectedImageIndex);
                 _selectedImageIndex = -1;
+                RefreshPathCombo();
                 _canvasPanel.Invalidate();
                 UpdatePathToolbarMode();
                 return true;
