@@ -457,8 +457,10 @@ namespace DiagramDesigner.Shapes
                         return new PointF(pixelX, pixelY);
                     };
 
-                    // 设置变换器，执行所有指令，然后清除
+                    // 设置变换器和区域边界，执行所有指令，然后清除
                     RenderCommand.SetVertexTransformer(transformer);
+                    RenderCommand.SetScalableZoneBounds(
+                        new RectangleF(zX, zY, zW, zH));
                     try
                     {
                         foreach (RenderCommand cmd in commands)
@@ -469,6 +471,7 @@ namespace DiagramDesigner.Shapes
                     finally
                     {
                         RenderCommand.ClearVertexTransformer();
+                        RenderCommand.ClearScalableZoneBounds();
                     }
                 }
                 else

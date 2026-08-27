@@ -45,6 +45,21 @@ namespace DiagramDesigner.Core
 
         private static VertexTransformer _activeTransformer = null;
 
+        /// <summary>当前线程的可缩放区域边界（归一化坐标）。设置后渲染时自动在边界线与边的交点处虚拟分割。</summary>
+        private static RectangleF? _scalableZoneNorm = null;
+
+        /// <summary>设置当前线程的可缩放区域边界（归一化坐标）</summary>
+        public static void SetScalableZoneBounds(RectangleF? zoneNorm)
+        {
+            _scalableZoneNorm = zoneNorm;
+        }
+
+        /// <summary>清除可缩放区域边界</summary>
+        public static void ClearScalableZoneBounds()
+        {
+            _scalableZoneNorm = null;
+        }
+
         /// <summary>设置当前线程的顶点变换器（在 Execute 前设置，Execute 后清除）</summary>
         public static void SetVertexTransformer(VertexTransformer transformer)
         {
@@ -381,12 +396,8 @@ namespace DiagramDesigner.Core
                 return;
             }
 
-            // 无曲线：快速路径
-            PointF[] pts = new PointF[_polygonPoints.Length];
-            for (int i = 0; i < _polygonPoints.Length; i++)
-            {
-                pts[i] = MapPoint(_polygonPoints[i].X, _polygonPoints[i].Y, rect);
-            }
+            // 无曲线：快速路径（支持区域虚拟分割）
+            PointF[] pts = ExpandAndMapPolygonPoints(_polygonPoints, rect, true);
 
             if (_fill)
             {
@@ -398,6 +409,46 @@ namespace DiagramDesigner.Core
                 using (Pen pen = new Pen(stroke, _strokeWidth / scale))
                     g.DrawPolygon(pen, pts);
             }
+        }
+
+        /// <summary>
+        /// 将归一化顶点数组映射为像素坐标数组。
+        /// 当可缩放区域边界已设置时，在跨越区域边界线的边上虚拟插入顶点，
+        /// 使差分缩放时每条子边完全落在单一缩放区间内。
+        /// </summary>
+        private static PointF[] ExpandAndMapPolygonPoints(PointF[] normPoints, RectangleF rect, bool closed)
+        {
+            bool useZoneSplit = (_scalableZoneNorm.HasValue && _activeTransformer != null);
+
+            if (!useZoneSplit)
+            {
+                PointF[] pts = new PointF[normPoints.Length];
+                for (int i = 0; i < normPoints.Length; i++)
+                    pts[i] = MapPoint(normPoints[i].X, normPoints[i].Y, rect);
+                return pts;
+            }
+
+            RectangleF zone = _scalableZoneNorm.Value;
+            List<PointF> result = new List<PointF>();
+            int edgeCount = closed ? normPoints.Length : normPoints.Length - 1;
+
+            for (int i = 0; i < edgeCount; i++)
+            {
+                int next = (i + 1) % normPoints.Length;
+                List<ZoneIntersectionHelper.SubEdge> subEdges =
+                    ZoneIntersectionHelper.SplitEdgeAtZoneLines(
+                        normPoints[i], normPoints[next],
+                        HandleType.None, HandleType.None, PointF.Empty, PointF.Empty,
+                        zone);
+
+                for (int j = 0; j < subEdges.Count; j++)
+                    result.Add(MapPoint(subEdges[j].P1.X, subEdges[j].P1.Y, rect));
+            }
+
+            if (!closed && normPoints.Length > 0)
+                result.Add(MapPoint(normPoints[normPoints.Length - 1].X, normPoints[normPoints.Length - 1].Y, rect));
+
+            return result.ToArray();
         }
 
         /// <summary>
@@ -429,10 +480,7 @@ namespace DiagramDesigner.Core
             }
 
             // 复合路径：按 IsNewFigure 分割为多个子图
-            // 计算绝对坐标顶点（使用变换器支持九宫格缩放）
-            PointF[] absPts = new PointF[n];
-            for (int i = 0; i < n; i++)
-                absPts[i] = MapPoint(normPoints[i].X, normPoints[i].Y, rect);
+            bool useZoneSplit = (_scalableZoneNorm.HasValue && _activeTransformer != null);
 
             // 收集各子图的起止索引
             List<int> figStarts = new List<int>();
@@ -455,26 +503,58 @@ namespace DiagramDesigner.Core
                 {
                     int idx = start + i;
                     int nextIdx = start + ((i + 1) % figN);
-                    PointF p1 = absPts[idx];
-                    PointF p2 = absPts[nextIdx];
 
                     bool hasOut = handleTypes != null && idx < handleTypes.Length && handleTypes[idx] != HandleType.None;
                     bool hasIn = handleTypes != null && nextIdx < handleTypes.Length && handleTypes[nextIdx] != HandleType.None;
 
-                    if (!hasOut && !hasIn)
+                    HandleType h1 = hasOut ? handleTypes[idx] : HandleType.None;
+                    HandleType h2 = hasIn ? handleTypes[nextIdx] : HandleType.None;
+                    PointF hOut1 = (hasOut && handleOuts != null && idx < handleOuts.Length) ? handleOuts[idx] : PointF.Empty;
+                    PointF hIn2 = (hasIn && handleIns != null && nextIdx < handleIns.Length) ? handleIns[nextIdx] : PointF.Empty;
+
+                    if (useZoneSplit)
                     {
-                        gp.AddLine(p1, p2);
+                        List<ZoneIntersectionHelper.SubEdge> subEdges =
+                            ZoneIntersectionHelper.SplitEdgeAtZoneLines(
+                                normPoints[idx], normPoints[nextIdx],
+                                h1, h2, hOut1, hIn2,
+                                _scalableZoneNorm.Value);
+
+                        foreach (ZoneIntersectionHelper.SubEdge se in subEdges)
+                        {
+                            PointF mp1 = MapPoint(se.P1.X, se.P1.Y, rect);
+                            PointF mp2 = MapPoint(se.P2.X, se.P2.Y, rect);
+                            if (se.IsCurve)
+                            {
+                                PointF mc1 = MapPoint(se.C1.X, se.C1.Y, rect);
+                                PointF mc2 = MapPoint(se.C2.X, se.C2.Y, rect);
+                                gp.AddBezier(mp1, mc1, mc2, mp2);
+                            }
+                            else
+                            {
+                                gp.AddLine(mp1, mp2);
+                            }
+                        }
                     }
                     else
                     {
-                        // 控制点 = 顶点 + 句柄偏移，同样使用变换器映射
-                        PointF cp1 = hasOut
-                            ? MapPoint(normPoints[idx].X + handleOuts[idx].X, normPoints[idx].Y + handleOuts[idx].Y, rect)
-                            : p1;
-                        PointF cp2 = hasIn
-                            ? MapPoint(normPoints[nextIdx].X + handleIns[nextIdx].X, normPoints[nextIdx].Y + handleIns[nextIdx].Y, rect)
-                            : p2;
-                        gp.AddBezier(p1, cp1, cp2, p2);
+                        PointF p1 = MapPoint(normPoints[idx].X, normPoints[idx].Y, rect);
+                        PointF p2 = MapPoint(normPoints[nextIdx].X, normPoints[nextIdx].Y, rect);
+
+                        if (!hasOut && !hasIn)
+                        {
+                            gp.AddLine(p1, p2);
+                        }
+                        else
+                        {
+                            PointF cp1 = hasOut
+                                ? MapPoint(normPoints[idx].X + handleOuts[idx].X, normPoints[idx].Y + handleOuts[idx].Y, rect)
+                                : p1;
+                            PointF cp2 = hasIn
+                                ? MapPoint(normPoints[nextIdx].X + handleIns[nextIdx].X, normPoints[nextIdx].Y + handleIns[nextIdx].Y, rect)
+                                : p2;
+                            gp.AddBezier(p1, cp1, cp2, p2);
+                        }
                     }
                 }
                 if (closed) gp.CloseFigure();
@@ -492,36 +572,66 @@ namespace DiagramDesigner.Core
             int n = normPoints.Length;
             if (n < 2) return gp;
 
-            // 计算绝对坐标顶点（使用变换器支持九宫格缩放）
-            PointF[] absPts = new PointF[n];
-            for (int i = 0; i < n; i++)
-                absPts[i] = MapPoint(normPoints[i].X, normPoints[i].Y, rect);
+            bool useZoneSplit = (_scalableZoneNorm.HasValue && _activeTransformer != null);
 
             int edgeCount = closed ? n : n - 1;
             for (int i = 0; i < edgeCount; i++)
             {
                 int next = (i + 1) % n;
-                PointF p1 = absPts[i];
-                PointF p2 = absPts[next];
 
                 bool hasOut = handleTypes != null && i < handleTypes.Length && handleTypes[i] != HandleType.None;
                 bool hasIn = handleTypes != null && next < handleTypes.Length && handleTypes[next] != HandleType.None;
 
-                if (!hasOut && !hasIn)
+                HandleType h1 = hasOut ? handleTypes[i] : HandleType.None;
+                HandleType h2 = hasIn ? handleTypes[next] : HandleType.None;
+                PointF hOut1 = (hasOut && handleOuts != null && i < handleOuts.Length) ? handleOuts[i] : PointF.Empty;
+                PointF hIn2 = (hasIn && handleIns != null && next < handleIns.Length) ? handleIns[next] : PointF.Empty;
+
+                if (useZoneSplit)
                 {
-                    gp.AddLine(p1, p2);
+                    // 渲染时虚拟分割：在区域边界线交点处拆分边
+                    List<ZoneIntersectionHelper.SubEdge> subEdges =
+                        ZoneIntersectionHelper.SplitEdgeAtZoneLines(
+                            normPoints[i], normPoints[next],
+                            h1, h2, hOut1, hIn2,
+                            _scalableZoneNorm.Value);
+
+                    foreach (ZoneIntersectionHelper.SubEdge se in subEdges)
+                    {
+                        PointF mp1 = MapPoint(se.P1.X, se.P1.Y, rect);
+                        PointF mp2 = MapPoint(se.P2.X, se.P2.Y, rect);
+                        if (se.IsCurve)
+                        {
+                            PointF mc1 = MapPoint(se.C1.X, se.C1.Y, rect);
+                            PointF mc2 = MapPoint(se.C2.X, se.C2.Y, rect);
+                            gp.AddBezier(mp1, mc1, mc2, mp2);
+                        }
+                        else
+                        {
+                            gp.AddLine(mp1, mp2);
+                        }
+                    }
                 }
                 else
                 {
-                    // 三次贝塞尔：cp1 从 p1 的 HandleOut，cp2 从 p2 的 HandleIn
-                    // 控制点 = 顶点 + 句柄偏移，使用变换器映射
-                    PointF cp1 = hasOut
-                        ? MapPoint(normPoints[i].X + handleOuts[i].X, normPoints[i].Y + handleOuts[i].Y, rect)
-                        : p1;
-                    PointF cp2 = hasIn
-                        ? MapPoint(normPoints[next].X + handleIns[next].X, normPoints[next].Y + handleIns[next].Y, rect)
-                        : p2;
-                    gp.AddBezier(p1, cp1, cp2, p2);
+                    // 无区域分割：标准映射
+                    PointF p1 = MapPoint(normPoints[i].X, normPoints[i].Y, rect);
+                    PointF p2 = MapPoint(normPoints[next].X, normPoints[next].Y, rect);
+
+                    if (!hasOut && !hasIn)
+                    {
+                        gp.AddLine(p1, p2);
+                    }
+                    else
+                    {
+                        PointF cp1 = hasOut
+                            ? MapPoint(normPoints[i].X + handleOuts[i].X, normPoints[i].Y + handleOuts[i].Y, rect)
+                            : p1;
+                        PointF cp2 = hasIn
+                            ? MapPoint(normPoints[next].X + handleIns[next].X, normPoints[next].Y + handleIns[next].Y, rect)
+                            : p2;
+                        gp.AddBezier(p1, cp1, cp2, p2);
+                    }
                 }
             }
             if (closed) gp.CloseFigure();
@@ -562,20 +672,70 @@ namespace DiagramDesigner.Core
                 }
                 else
                 {
-                    PointF[] pts = new PointF[def.Points.Length];
-                    for (int i = 0; i < def.Points.Length; i++)
+                    // 无曲线路径（支持区域虚拟分割）
+                    bool useZoneSplit = (_scalableZoneNorm.HasValue && _activeTransformer != null);
+                    if (useZoneSplit)
                     {
-                        pts[i] = MapPoint(def.Points[i].X, def.Points[i].Y, rect);
+                        RectangleF zone = _scalableZoneNorm.Value;
+                        gp = new GraphicsPath();
+                        gp.FillMode = FillMode.Winding;
+                        int dn = def.Points.Length;
+                        int dEdgeCount = def.IsShape ? dn : dn - 1;
+
+                        if (def.IsShape)
+                        {
+                            // 形状：扩展点数组并添加多边形
+                            List<PointF> expPts = new List<PointF>();
+                            for (int i = 0; i < dEdgeCount; i++)
+                            {
+                                int next = (i + 1) % dn;
+                                List<ZoneIntersectionHelper.SubEdge> subEdges =
+                                    ZoneIntersectionHelper.SplitEdgeAtZoneLines(
+                                        def.Points[i], def.Points[next],
+                                        HandleType.None, HandleType.None, PointF.Empty, PointF.Empty,
+                                        zone);
+                                for (int j = 0; j < subEdges.Count; j++)
+                                    expPts.Add(MapPoint(subEdges[j].P1.X, subEdges[j].P1.Y, rect));
+                            }
+                            gp.AddPolygon(expPts.ToArray());
+                        }
+                        else
+                        {
+                            // 线体：逐边分割后添加子线段
+                            for (int i = 0; i < dEdgeCount; i++)
+                            {
+                                int next = i + 1;
+                                List<ZoneIntersectionHelper.SubEdge> subEdges =
+                                    ZoneIntersectionHelper.SplitEdgeAtZoneLines(
+                                        def.Points[i], def.Points[next],
+                                        HandleType.None, HandleType.None, PointF.Empty, PointF.Empty,
+                                        zone);
+                                foreach (ZoneIntersectionHelper.SubEdge se in subEdges)
+                                {
+                                    PointF mp1 = MapPoint(se.P1.X, se.P1.Y, rect);
+                                    PointF mp2 = MapPoint(se.P2.X, se.P2.Y, rect);
+                                    gp.AddLine(mp1, mp2);
+                                }
+                            }
+                        }
                     }
-                    gp = new GraphicsPath();
-                    gp.FillMode = FillMode.Winding;
-                    if (def.IsShape)
-                        gp.AddPolygon(pts);
                     else
                     {
-                        // 线体：添加开放路径（不闭合）
-                        for (int i = 0; i < pts.Length - 1; i++)
-                            gp.AddLine(pts[i], pts[i + 1]);
+                        PointF[] pts = new PointF[def.Points.Length];
+                        for (int i = 0; i < def.Points.Length; i++)
+                        {
+                            pts[i] = MapPoint(def.Points[i].X, def.Points[i].Y, rect);
+                        }
+                        gp = new GraphicsPath();
+                        gp.FillMode = FillMode.Winding;
+                        if (def.IsShape)
+                            gp.AddPolygon(pts);
+                        else
+                        {
+                            // 线体：添加开放路径（不闭合）
+                            for (int i = 0; i < pts.Length - 1; i++)
+                                gp.AddLine(pts[i], pts[i + 1]);
+                        }
                     }
                 }
                 absPaths.Add(gp);
