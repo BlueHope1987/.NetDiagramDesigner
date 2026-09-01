@@ -442,11 +442,10 @@ namespace DiagramDesigner.Serialization
                     }
                 }
 
-                // 序列化图片图层列表（从 ShapeType 获取，随文档一起存储）
-                ShapeType imgType = ShapeTypeRegistry.Instance.GetShapeType(g.ShapeTypeName);
-                if (imgType != null && imgType.ImageLayers != null)
+                // 序列化图片图层列表（从实例获取，按实例独立存储）
+                if (g.ImageLayers != null)
                 {
-                    foreach (ImageLayer layer in imgType.ImageLayers)
+                    foreach (ImageLayer layer in g.ImageLayers)
                     {
                         ImageLayerData ild = ToImageLayerData(layer);
                         if (ild != null)
@@ -560,22 +559,20 @@ namespace DiagramDesigner.Serialization
                     }
                 }
 
-                // 反序列化图片图层列表：将文档中的 ImageLayerData 还原为 ImageLayer，
-                // 并同步到 ShapeTypeRegistry 中对应的 ShapeType（供渲染时通过类型名访问）。
-                // 仅当文档携带图片图层数据时才更新，避免覆盖工具箱已有的定义。
-                if (sd.ImageLayers != null && sd.ImageLayers.Count > 0)
+                // 反序列化图片图层列表：直接设置到实例，避免不同图形类型间交叉污染。
+                // 旧文档无图片数据时设为空列表（不再从 ShapeType 懒加载）。
                 {
-                    ShapeType type = ShapeTypeRegistry.Instance.GetShapeType(sd.ShapeTypeName);
-                    if (type != null)
+                    List<ImageLayer> layers = new List<ImageLayer>();
+                    if (sd.ImageLayers != null)
                     {
-                        type.ImageLayers.Clear();
                         foreach (ImageLayerData ild in sd.ImageLayers)
                         {
                             ImageLayer layer = FromImageLayerData(ild);
                             if (layer != null)
-                                type.ImageLayers.Add(layer);
+                                layers.Add(layer);
                         }
                     }
+                    g.ImageLayers = layers;
                 }
 
                 shape = g;

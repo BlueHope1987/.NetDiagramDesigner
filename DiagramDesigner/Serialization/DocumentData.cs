@@ -267,7 +267,7 @@ namespace DiagramDesigner.Serialization
         }
 
         /// <summary>
-        /// 图片图层列表（对应 ShapeType.ImageLayers）。
+        /// 图片图层列表（对应 GenericShape.ImageLayers，按实例独立存储）。
         /// 旧文件没有该字段时为空列表，不影响加载。
         /// </summary>
         public List<ImageLayerData> ImageLayers

@@ -346,6 +346,17 @@ namespace DiagramDesigner.Core
                     shape.CurrentStateName = _defaultStates[0].Name;
                 }
 
+                // 复制图片图层到实例（按实例独立存储）
+                // 无论 ShapeType 是否有图片，都设置实例的 ImageLayers 为非 null，
+                // 防止 Draw 方法懒加载 ShapeType 的图片导致跨图形类型污染
+                List<ImageLayer> instanceImgLayers = new List<ImageLayer>();
+                if (_imageLayers != null)
+                {
+                    foreach (ImageLayer il in _imageLayers)
+                        instanceImgLayers.Add(il.Clone());
+                }
+                shape.ImageLayers = instanceImgLayers;
+
                 return shape;
             }
         }

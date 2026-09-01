@@ -2963,15 +2963,14 @@ namespace DiagramDesigner.Controls
                 float newW = Math.Max(0.02f, _imageDragStartBounds.Width / canvasW + dx);
                 float newH = Math.Max(0.02f, _imageDragStartBounds.Height / canvasH + dy);
 
-                // 保持宽高比（Shift 键不约束）
-                if ((Control.ModifierKeys & Keys.Shift) != Keys.Shift)
+                // 默认自由缩放，按住 Shift 保持宽高比
+                if ((Control.ModifierKeys & Keys.Shift) == Keys.Shift)
                 {
                     float ratio = _imageDragStartBounds.Width / _imageDragStartBounds.Height;
                     float startW = _imageDragStartBounds.Width / canvasW;
                     float startH = _imageDragStartBounds.Height / canvasH;
                     if (startW > 0.001f && startH > 0.001f)
                     {
-                        // 使用比例变化量比较，尊重用户的主导拖拽方向
                         float propW = newW / startW;
                         float propH = newH / startH;
                         if (propW > propH)
@@ -4020,11 +4019,13 @@ namespace DiagramDesigner.Controls
                     ImageLayer layer = ImageLayer.FromPngBytes(pngBytes, name);
 
                     // 默认放置在画布中心，尺寸按宽高比自适应
+                    // 考虑画布宽高比，确保图片初始放置不变形
                     float canvasW = (float)_canvasPanel.Width;
                     float canvasH = (float)_canvasPanel.Height;
+                    float canvasAspect = canvasW / canvasH;
                     float imgW = 0.3f;
-                    float imgH = imgW / layer.AspectRatio;
-                    if (imgH > 0.5f) { imgH = 0.5f; imgW = imgH * layer.AspectRatio; }
+                    float imgH = imgW * canvasAspect / layer.AspectRatio;
+                    if (imgH > 0.5f) { imgH = 0.5f; imgW = imgH * layer.AspectRatio / canvasAspect; }
                     layer.X = (1f - imgW) / 2f;
                     layer.Y = (1f - imgH) / 2f;
                     layer.Width = imgW;

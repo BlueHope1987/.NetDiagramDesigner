@@ -112,6 +112,17 @@ namespace DiagramDesigner.Shapes
             set { _systemActions = value; }
         }
 
+        /// <summary>
+        /// 实例专属的图片图层列表。序列化时按实例存储，
+        /// 避免不同图形类型间的图片数据交叉污染。
+        /// 首次渲染时若为 null，则从 ShapeType 复制（向后兼容）。
+        /// </summary>
+        public List<ImageLayer> ImageLayers
+        {
+            get { return _imageLayers; }
+            set { _imageLayers = value; }
+        }
+
         public GenericShape()
         {
             Name = "通用图形";
@@ -489,18 +500,11 @@ namespace DiagramDesigner.Shapes
                 DrawFallback(g, colors, scale);
             }
 
-            // 2. 渲染图片图层（按实例复制，随元件边界缩放）
-            // 首次渲染时从 ShapeType 复制，之后保持实例独立副本
-            if (_imageLayers == null)
-            {
-                _imageLayers = new List<ImageLayer>();
-                if (type != null && type.ImageLayers != null)
-                {
-                    foreach (ImageLayer il in type.ImageLayers)
-                        _imageLayers.Add(il.Clone());
-                }
-            }
-            if (_imageLayers.Count > 0)
+            // 2. 渲染图片图层（按实例独立存储，随元件边界缩放）
+            // 图片图层完全由实例自身持有，不再从 ShapeType 懒加载，
+            // 杜绝不同图形类型间的图片数据交叉污染。
+            // 旧文档无实例图片数据时 _imageLayers 为 null，不渲染图片。
+            if (_imageLayers != null && _imageLayers.Count > 0)
             {
                 foreach (ImageLayer imgLayer in _imageLayers)
                 {
@@ -897,6 +901,15 @@ namespace DiagramDesigner.Shapes
             // 拷贝 Zone
             foreach (ShapeZone z in this.Zones)
                 clone.Zones.Add(z.Clone());
+
+            // 拷贝图片图层（实例独立副本，始终设置非 null）
+            List<ImageLayer> imgCopy = new List<ImageLayer>();
+            if (this._imageLayers != null)
+            {
+                foreach (ImageLayer il in this._imageLayers)
+                    imgCopy.Add(il.Clone());
+            }
+            clone.ImageLayers = imgCopy;
 
             return clone;
         }
