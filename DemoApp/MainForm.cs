@@ -15,6 +15,7 @@ namespace DemoApp
         private DiagramEditor _editor;
         private MenuStrip _menuStrip;
         private string _currentFilePath = "";
+        private EventMonitorForm _eventMonitor;
 
         public MainForm()
         {
@@ -31,7 +32,10 @@ namespace DemoApp
             // 3. 宿主自行构建文件菜单
             BuildFileMenu();
 
-            // 4. 控件会自动注入其余菜单（编辑/视图/工具/图形）
+            // 4. 构建测试菜单
+            BuildTestMenu();
+
+            // 5. 控件会自动注入其余菜单（编辑/视图/工具/图形）
 
             this.Text = "Marvin's DiagramDesigner - Demo";
             this.Size = new Size(1400, 900);
@@ -63,6 +67,65 @@ namespace DemoApp
 
             InitializeSampleData();
         }
+
+        #region Test Menu
+
+        private void BuildTestMenu()
+        {
+            ToolStripMenuItem testMenu = new ToolStripMenuItem("测试(&D)");
+            testMenu.DropDownItems.Add(new ToolStripMenuItem("事件追踪监视器", null,
+                new EventHandler(OnOpenEventMonitor)));
+            testMenu.DropDownItems.Add(new ToolStripSeparator());
+            testMenu.DropDownItems.Add(new ToolStripMenuItem("切换鼠标移动追踪", null,
+                new EventHandler(OnToggleMouseMoveLog)));
+            _menuStrip.Items.Add(testMenu);
+        }
+
+        private void OnOpenEventMonitor(object sender, EventArgs e)
+        {
+            if (_eventMonitor == null || _eventMonitor.IsDisposed)
+            {
+                _eventMonitor = new EventMonitorForm(_editor);
+                _eventMonitor.FormClosed += new FormClosedEventHandler(OnEventMonitorClosed);
+            }
+
+            if (!_eventMonitor.Visible)
+            {
+                // 放置在主窗体右侧
+                Point pt = new Point(
+                    this.Right - _eventMonitor.Width - 10,
+                    this.Top + 60);
+                _eventMonitor.Location = pt;
+                _eventMonitor.Show(this);
+            }
+            else
+            {
+                _eventMonitor.Focus();
+            }
+        }
+
+        private void OnEventMonitorClosed(object sender, FormClosedEventArgs e)
+        {
+            _eventMonitor = null;
+        }
+
+        private void OnToggleMouseMoveLog(object sender, EventArgs e)
+        {
+            if (_eventMonitor == null || _eventMonitor.IsDisposed)
+            {
+                MessageBox.Show("请先打开事件追踪监视器", "提示",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            bool current = _eventMonitor.LogMouseMove;
+            _eventMonitor.LogMouseMove = !current;
+            MessageBox.Show(
+                "鼠标移动追踪: " + (!current ? "开启" : "关闭"),
+                "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        #endregion
 
         #region File Menu
 

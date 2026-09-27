@@ -357,9 +357,13 @@ namespace DiagramDesigner.Controls
 
         private void OnCanvasMouseMove(object sender, MouseEventArgs e)
         {
-            PointF world = _canvas.ScreenToWorld(e.Location);
-            _zoomLabel.Text = string.Format("缩放: {0:0}% | 坐标: ({1:0}, {2:0})",
-                _canvas.Zoom * 100, world.X, world.Y);
+            // 仅在非拖动/缩放时更新坐标显示，避免高频字符串格式化影响性能
+            if (!_canvas.IsDragging && !_canvas.IsResizing)
+            {
+                PointF world = _canvas.ScreenToWorld(e.Location);
+                _zoomLabel.Text = string.Format("缩放: {0:0}% | 坐标: ({1:0}, {2:0})",
+                    _canvas.Zoom * 100, world.X, world.Y);
+            }
         }
 
         private void OnCanvasMouseDown(object sender, MouseEventArgs e)

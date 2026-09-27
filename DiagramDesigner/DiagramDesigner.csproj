@@ -57,6 +57,7 @@
     <Compile Include="Core\CurveAwareMerge.cs" />
     <Compile Include="Core\RegionOutlineTracer.cs" />
     <Compile Include="Core\EditorEvents.cs" />
+    <Compile Include="Core\ChangeSet.cs" />
     <Compile Include="Core\ZoneIntersectionHelper.cs" />
     <Compile Include="Config\GlobalConfig.cs" />
     <Compile Include="Controls\ToolboxPanel.cs" />

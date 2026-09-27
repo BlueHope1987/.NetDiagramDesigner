@@ -78,6 +78,24 @@ namespace DiagramDesigner.Controls
             WireEvents();
             RegisterBuiltinActions();
             ApplyTheme();
+
+            // === Tier 2 增量变更事件透传订阅 ===
+            _canvas.ShapeChanged += delegate(object s, ChangeSet cs)
+            {
+                if (ShapeChanged != null) ShapeChanged(s, cs);
+            };
+            _canvas.ConnectionChanged += delegate(object s, ChangeSet cs)
+            {
+                if (ConnectionChanged != null) ConnectionChanged(s, cs);
+            };
+            _canvas.BatchChanged += delegate(object s, BatchChangeSet bcs)
+            {
+                if (BatchChanged != null) BatchChanged(s, bcs);
+            };
+            _canvas.DocumentCommitted += delegate(object s, ChangeSet cs)
+            {
+                if (DocumentCommitted != null) DocumentCommitted(s, cs);
+            };
         }
 
         private void InitializeComponent()
@@ -981,6 +999,74 @@ namespace DiagramDesigner.Controls
         public event EventHandler<ConnectionEventArgs> ConnectionDeleted;
         /// <summary>图形状态切换时触发，携带新旧状态名</summary>
         public event EventHandler<ShapeStateChangedEventArgs> ShapeStateChanged;
+
+        // === Tier 2 增量变更事件透传 ===
+        public event EventHandler<ChangeSet> ShapeChanged;
+        public event EventHandler<ChangeSet> ConnectionChanged;
+        public event EventHandler<BatchChangeSet> BatchChanged;
+        public event EventHandler<ChangeSet> DocumentCommitted;
+
+        /// <summary>查询画布是否处于"宿主外部变更"作用域。供宿主决定是否处理事件回弹。</summary>
+        public bool IsApplyingExternalChange
+        {
+            get { return _canvas.IsApplyingExternalChange; }
+        }
+
+        /// <summary>进入事件抑制作用域。详见 DrawingCanvas.SuppressEvents。</summary>
+        public IDisposable SuppressEvents()
+        {
+            return _canvas.SuppressEvents();
+        }
+
+        /// <summary>进入"宿主外部变更"作用域。详见 DrawingCanvas.BeginApplyExternalChange。</summary>
+        public IDisposable BeginApplyExternalChange()
+        {
+            return _canvas.BeginApplyExternalChange();
+        }
+
+        /// <summary>
+        /// 宿主主动更新指定图形的属性。内部自动进入 BeginApplyExternalChange 作用域，
+        /// 避免事件回弹造成循环。返回是否找到图形并成功设置。
+        /// </summary>
+        public bool UpdateShapeProperty(Guid shapeId, string propertyName, object value)
+        {
+            ShapeBase target = null;
+            foreach (ShapeBase s in _canvas.Document.Shapes)
+            {
+                if (s.Id == shapeId) { target = s; break; }
+            }
+            if (target == null)
+                return false;
+
+            using (BeginApplyExternalChange())
+            {
+                try
+                {
+                    switch (propertyName)
+                    {
+                        case "Name": target.Name = (string)value; break;
+                        case "Description": target.Description = (string)value; break;
+                        case "Bounds": target.Bounds = (RectangleF)value; break;
+                        case "X": target.X = (float)value; break;
+                        case "Y": target.Y = (float)value; break;
+                        case "Width": target.Width = (float)value; break;
+                        case "Height": target.Height = (float)value; break;
+                        case "FillColor": target.FillColor = (Color)value; break;
+                        case "BorderColor": target.BorderColor = (Color)value; break;
+                        case "TextColor": target.TextColor = (Color)value; break;
+                        case "BorderWidth": target.BorderWidth = (float)value; break;
+                        case "Selected": target.Selected = (bool)value; break;
+                        default: return false;
+                    }
+                    _canvas.Invalidate();
+                }
+                catch (InvalidCastException)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
 
         protected virtual void OnThemeChanged(EventArgs e)
         {

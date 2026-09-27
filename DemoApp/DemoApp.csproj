@@ -37,6 +37,7 @@
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="MainForm.cs" />
+    <Compile Include="EventMonitorForm.cs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\DiagramDesigner\DiagramDesigner.csproj">

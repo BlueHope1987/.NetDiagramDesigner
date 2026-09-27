@@ -19,6 +19,7 @@ Marvin's DiagramDesigner 是一个兼容 .NET Framework 2.0 的 WinForms 可视�
 - XML 序列化，文档可持久化与还原（含 Zone、多路径、自定义图形配置）
 - 亮色/暗色双主题
 - Facade 模式封装，宿主只需与一个 DiagramEditor 实例交互
+- Tier 2 增量变更通知（ChangeSet），宿主可局部刷新而无需重新解析整篇文档；支持批量作用域与重入防护
 
 ## 快速开始
 
@@ -75,6 +76,51 @@ _editor.ShapeStateChanged += delegate(object s, ShapeStateChangedEventArgs e) {
 // 另有 ShapeDeleted / ConnectionAdded / ConnectionDeleted 事件
 ```
 
+### 5. 增量变更事件（Tier 2）
+
+为避免宿主在每步操作后重新解析整篇文档，编辑器提供细粒度的增量变更通知。每个 `ChangeSet` 携带图形 ID、属性名、旧值、新值，宿主可据此做局部刷新。
+
+```csharp
+// 图形属性变更 / 增删
+_editor.ShapeChanged += delegate(object s, ChangeSet e) {
+    if (e.Kind == ChangeKind.ShapePropertyChanged)
+        UpdateLocalView(e.ShapeId, e.PropertyName, e.NewValue);
+};
+
+// 连线增删
+_editor.ConnectionChanged += delegate(object s, ChangeSet e) { /* ... */ };
+
+// 批量变更（SuppressEvents 作用域退出时触发，合并为一次发送）
+_editor.BatchChanged += delegate(object s, BatchChangeSet e) {
+    foreach (ChangeSet cs in e.Changes) { /* ... */ }
+};
+
+// 提交事件（鼠标抬起 / 编辑结束时触发，可序列化保存）
+_editor.DocumentCommitted += delegate(object s, ChangeSet e) { SaveDocument(); };
+```
+
+**ChangeSet 字段**：`Kind` / `ShapeId` / `PropertyName` / `OldValue` / `NewValue` / `Timestamp`，带 `[Serializable]`，可直接用于 Undo/Redo 栈或跨进程传递。
+
+**宿主主动修改图形属性**：`UpdateShapeProperty` 内部自动进入重入防护作用域，避免事件回弹造成循环。
+
+```csharp
+// 返回是否找到图形并成功设置
+_editor.UpdateShapeProperty(shapeId, "Name", "新名称");
+_editor.UpdateShapeProperty(shapeId, "X", 100.0f);
+```
+
+**事件抑制作用域**：批量加载或替换图形时，将期间所有 ChangeSet 合并为一次 `BatchChanged` 发送，避免高频事件冲击宿主。
+
+```csharp
+using (_editor.SuppressEvents())
+{
+    // 期间所有变更累计，出块时合并发送
+    foreach (var shape in shapes) _editor.AddShape(shape);
+}
+```
+
+> 原有的 `DocumentModified` / `ShapeAdded` / `ShapeDeleted` 等粗粒度事件全部保留，与增量事件并行触发，互不影响。
+
 ## 目录结构
 
 ```
@@ -126,6 +172,7 @@ All code resides under the `DiagramDesigner` namespace with no third-party depen
 - XML serialization for document persistence and restoration (including Zones, multi-paths, custom shape configs)
 - Light/Dark dual themes
 - Facade pattern encapsulation, host interacts with a single DiagramEditor instance
+- Tier 2 incremental change notifications (ChangeSet) so the host can refresh locally without re-parsing the whole document; supports batch scopes and reentry protection
 
 ## Quick Start
 
@@ -180,6 +227,51 @@ _editor.ShapeStateChanged += delegate(object s, ShapeStateChangedEventArgs e) {
 };
 // Also: ShapeDeleted / ConnectionAdded / ConnectionDeleted
 ```
+
+### 5. Incremental Change Events (Tier 2)
+
+To avoid the host re-parsing the entire document on every operation, the editor exposes fine-grained incremental change notifications. Each `ChangeSet` carries the shape ID, property name, old value, and new value, enabling the host to refresh only the affected region.
+
+```csharp
+// Shape property changes / add / remove
+_editor.ShapeChanged += delegate(object s, ChangeSet e) {
+    if (e.Kind == ChangeKind.ShapePropertyChanged)
+        UpdateLocalView(e.ShapeId, e.PropertyName, e.NewValue);
+};
+
+// Connection add / remove
+_editor.ConnectionChanged += delegate(object s, ChangeSet e) { /* ... */ };
+
+// Batch change (sent once when a SuppressEvents scope exits, merging all changes)
+_editor.BatchChanged += delegate(object s, BatchChangeSet e) {
+    foreach (ChangeSet cs in e.Changes) { /* ... */ }
+};
+
+// Commit event (fired on mouse-up / edit-end, safe to serialize)
+_editor.DocumentCommitted += delegate(object s, ChangeSet e) { SaveDocument(); };
+```
+
+**ChangeSet fields**: `Kind` / `ShapeId` / `PropertyName` / `OldValue` / `NewValue` / `Timestamp`, marked `[Serializable]` and ready for Undo/Redo stacks or cross-process delivery.
+
+**Host-driven property updates**: `UpdateShapeProperty` automatically enters a reentry-protection scope so the event does not bounce back into a loop.
+
+```csharp
+// Returns true if the shape was found and the property set successfully
+_editor.UpdateShapeProperty(shapeId, "Name", "New Name");
+_editor.UpdateShapeProperty(shapeId, "X", 100.0f);
+```
+
+**Event suppression scope**: for bulk loads or replacements, all `ChangeSet`s within the scope are accumulated and sent as a single `BatchChanged`, preventing event storms.
+
+```csharp
+using (_editor.SuppressEvents())
+{
+    // Changes are buffered and merged when the block exits
+    foreach (var shape in shapes) _editor.AddShape(shape);
+}
+```
+
+> The original coarse-grained events (`DocumentModified` / `ShapeAdded` / `ShapeDeleted`, etc.) are all retained and fire in parallel with the incremental events.
 
 ## Directory Structure
 

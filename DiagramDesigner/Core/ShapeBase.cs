@@ -53,14 +53,7 @@ namespace DiagramDesigner.Core
         public string Name
         {
             get { return _name; }
-            set
-            {
-                if (value == null)
-                    _name = "";
-                else
-                    _name = value;
-                NotifyChanged();
-            }
+            set { SetProperty<string>(ref _name, value == null ? "" : value, "Name"); }
         }
 
         [Category("外观")]
@@ -69,21 +62,14 @@ namespace DiagramDesigner.Core
         public string Description
         {
             get { return _description; }
-            set
-            {
-                if (value == null)
-                    _description = "";
-                else
-                    _description = value;
-                NotifyChanged();
-            }
+            set { SetProperty<string>(ref _description, value == null ? "" : value, "Description"); }
         }
 
         [Browsable(false)]
         public RectangleF Bounds
         {
             get { return _bounds; }
-            set { _bounds = value; NotifyChanged(); }
+            set { SetProperty<RectangleF>(ref _bounds, value, "Bounds"); }
         }
 
         [Category("布局")]
@@ -91,7 +77,13 @@ namespace DiagramDesigner.Core
         public float X
         {
             get { return _bounds.X; }
-            set { _bounds.X = value; NotifyChanged(); }
+            set
+            {
+                float old = _bounds.X;
+                if (old == value) return;
+                _bounds.X = value;
+                NotifyPropertyChange("X", old, value);
+            }
         }
 
         [Category("布局")]
@@ -99,7 +91,13 @@ namespace DiagramDesigner.Core
         public float Y
         {
             get { return _bounds.Y; }
-            set { _bounds.Y = value; NotifyChanged(); }
+            set
+            {
+                float old = _bounds.Y;
+                if (old == value) return;
+                _bounds.Y = value;
+                NotifyPropertyChange("Y", old, value);
+            }
         }
 
         [Category("布局")]
@@ -109,11 +107,10 @@ namespace DiagramDesigner.Core
             get { return _bounds.Width; }
             set
             {
-                if (value > 10)
-                {
-                    _bounds.Width = value;
-                    NotifyChanged();
-                }
+                float old = _bounds.Width;
+                if (value <= 10 || old == value) return;
+                _bounds.Width = value;
+                NotifyPropertyChange("Width", old, value);
             }
         }
 
@@ -124,11 +121,10 @@ namespace DiagramDesigner.Core
             get { return _bounds.Height; }
             set
             {
-                if (value > 10)
-                {
-                    _bounds.Height = value;
-                    NotifyChanged();
-                }
+                float old = _bounds.Height;
+                if (value <= 10 || old == value) return;
+                _bounds.Height = value;
+                NotifyPropertyChange("Height", old, value);
             }
         }
 
@@ -137,7 +133,7 @@ namespace DiagramDesigner.Core
         public Color FillColor
         {
             get { return _fillColor; }
-            set { _fillColor = value; NotifyChanged(); }
+            set { SetProperty<Color>(ref _fillColor, value, "FillColor"); }
         }
 
         [Category("外观")]
@@ -145,7 +141,7 @@ namespace DiagramDesigner.Core
         public Color BorderColor
         {
             get { return _borderColor; }
-            set { _borderColor = value; NotifyChanged(); }
+            set { SetProperty<Color>(ref _borderColor, value, "BorderColor"); }
         }
 
         [Category("外观")]
@@ -153,7 +149,7 @@ namespace DiagramDesigner.Core
         public Color TextColor
         {
             get { return _textColor; }
-            set { _textColor = value; NotifyChanged(); }
+            set { SetProperty<Color>(ref _textColor, value, "TextColor"); }
         }
 
         [Category("外观")]
@@ -161,14 +157,14 @@ namespace DiagramDesigner.Core
         public float BorderWidth
         {
             get { return _borderWidth; }
-            set { _borderWidth = value; NotifyChanged(); }
+            set { SetProperty<float>(ref _borderWidth, value, "BorderWidth"); }
         }
 
         [Browsable(false)]
         public bool Selected
         {
             get { return _selected; }
-            set { _selected = value; NotifyChanged(); }
+            set { SetProperty<bool>(ref _selected, value, "Selected"); }
         }
 
         [Browsable(false)]
@@ -382,6 +378,53 @@ namespace DiagramDesigner.Core
         {
             if (Changed != null)
                 Changed(this, EventArgs.Empty);
+        }
+
+        /// <summary>
+        /// 增量属性变更事件。携带 ChangeSet(图形ID/属性名/旧值/新值)，
+        /// 供宿主做局部刷新而无需重新解析整篇文档。
+        /// 与 Changed 事件并行触发，互不影响。
+        /// </summary>
+        public event EventHandler<ChangeSet> ShapeChanged;
+
+        /// <summary>
+        /// 设置属性并触发 ChangeSet 通知。捕获旧值用于事件载荷。
+        /// 仅当新旧值不同时才触发通知。返回旧值便于链式调用。
+        /// </summary>
+        protected T SetProperty<T>(ref T field, T value, string propertyName)
+        {
+            T old = field;
+            if (object.Equals(old, value))
+                return old;
+            field = value;
+            NotifyChanged();
+            RaiseShapeChanged(propertyName, old, value);
+            return old;
+        }
+
+        /// <summary>
+        /// 设置 struct 字段的子成员并触发 ChangeSet 通知（如 _bounds.X = value 这种情形）。
+        /// 由调用方在调用前手动捕获旧值并修改字段。
+        /// </summary>
+        protected void NotifyPropertyChange(string propertyName, object oldValue, object newValue)
+        {
+            NotifyChanged();
+            RaiseShapeChanged(propertyName, oldValue, newValue);
+        }
+
+        private void RaiseShapeChanged(string propertyName, object oldValue, object newValue)
+        {
+            EventHandler<ChangeSet> handler = ShapeChanged;
+            if (handler == null)
+                return;
+            ChangeSet cs = new ChangeSet();
+            cs.Kind = ChangeKind.ShapePropertyChanged;
+            cs.ShapeId = _id;
+            cs.PropertyName = propertyName;
+            cs.OldValue = oldValue;
+            cs.NewValue = newValue;
+            cs.Timestamp = DateTime.Now;
+            handler(this, cs);
         }
 
         protected virtual void DrawSelection(Graphics g, float scale)

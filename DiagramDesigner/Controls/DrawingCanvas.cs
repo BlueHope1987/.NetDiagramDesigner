@@ -97,6 +97,18 @@ namespace DiagramDesigner.Controls
             }
         }
 
+        /// <summary>是否正在拖动图形（供外部查询以避免高频回调）</summary>
+        public bool IsDragging
+        {
+            get { return _isDragging; }
+        }
+
+        /// <summary>是否正在缩放图形（供外部查询以避免高频回调）</summary>
+        public bool IsResizing
+        {
+            get { return _isResizing; }
+        }
+
         public float Zoom
         {
             get { return _zoom; }
@@ -143,16 +155,174 @@ namespace DiagramDesigner.Controls
                 DocumentModified(this, EventArgs.Empty);
         }
 
+        // === Tier 2 增量变更通知 ===
+        private bool _isSuppressing = false;
+        private List<ChangeSet> _suppressedChanges = new List<ChangeSet>();
+        private bool _isApplyingExternalChange = false;
+
+        /// <summary>宿主正在通过 Editor API 进行外部变更时为 true。
+        /// 期间触发的 ChangeSet 事件被静默吞掉，防止宿主回调-事件回弹的循环。</summary>
+        public bool IsApplyingExternalChange
+        {
+            get { return _isApplyingExternalChange; }
+        }
+
+        /// <summary>
+        /// 增量变更事件。ShapeBase.ShapeChanged 经画布汇聚后转发给宿主。
+        /// 同时也用于 ShapeAdded/ShapeRemoved/ConnectionAdded/ConnectionRemoved 的 ChangeSet 通知。
+        /// </summary>
+        public event EventHandler<ChangeSet> ShapeChanged;
+        public event EventHandler<ChangeSet> ConnectionChanged;
+        public event EventHandler<BatchChangeSet> BatchChanged;
+        public event EventHandler<ChangeSet> DocumentCommitted;
+
+        /// <summary>
+        /// 进入事件抑制作用域。期间所有 ChangeSet 累计到 _suppressedChanges，
+        /// 退出 using 块时合并为一次 BatchChangeSet 触发。
+        /// 典型用法: 宿主批量加载文档或批量替换图形时包裹。
+        /// </summary>
+        public IDisposable SuppressEvents()
+        {
+            return new EventSuppressor(this);
+        }
+
+        /// <summary>
+        /// 进入"宿主外部变更"作用域。期间触发的 ChangeSet 被静默吞掉，
+        /// 防止宿主回调 Editor API 时事件回弹造成循环。
+        /// 典型用法: 宿主主动调用 UpdateShapeProperty 修改图形属性时包裹。
+        /// </summary>
+        public IDisposable BeginApplyExternalChange()
+        {
+            return new ExternalChangeScope(this);
+        }
+
+        /// <summary>
+        /// 统一 ChangeSet 派发入口。所有变更通知都应通过此方法。
+        /// 负责: 重入防护(_isApplyingExternalChange)、抑制累计(_isSuppressing)、事件分流。
+        /// </summary>
+        private void DispatchChange(ChangeSet change)
+        {
+            // 外部变更期间不回弹事件
+            if (_isApplyingExternalChange)
+                return;
+
+            // 抑制期间累计，出域时合并
+            if (_isSuppressing)
+            {
+                _suppressedChanges.Add(change);
+                return;
+            }
+
+            // 分流到具体事件
+            switch (change.Kind)
+            {
+                case ChangeKind.ShapePropertyChanged:
+                case ChangeKind.ShapeAdded:
+                case ChangeKind.ShapeRemoved:
+                    if (ShapeChanged != null)
+                        ShapeChanged(this, change);
+                    break;
+                case ChangeKind.ConnectionAdded:
+                case ChangeKind.ConnectionRemoved:
+                    if (ConnectionChanged != null)
+                        ConnectionChanged(this, change);
+                    break;
+                case ChangeKind.DocumentCommitted:
+                    if (DocumentCommitted != null)
+                        DocumentCommitted(this, change);
+                    break;
+            }
+        }
+
+        /// <summary>单个图形的 ShapeChanged 转发器。绑定到每个加入文档的图形。</summary>
+        private void OnShapeInternalChanged(object sender, ChangeSet e)
+        {
+            DispatchChange(e);
+        }
+
+        /// <summary>包装 AddShape 流程: 在添加图形后订阅其 ShapeChanged 事件，并派发 ShapeAdded ChangeSet。</summary>
+        private void TrackShapeEvents(ShapeBase shape)
+        {
+            if (shape == null) return;
+            shape.ShapeChanged += new EventHandler<ChangeSet>(OnShapeInternalChanged);
+        }
+
+        /// <summary>取消订阅图形事件，用于 RemoveShape 流程。</summary>
+        private void UntrackShapeEvents(ShapeBase shape)
+        {
+            if (shape == null) return;
+            shape.ShapeChanged -= new EventHandler<ChangeSet>(OnShapeInternalChanged);
+        }
+
+        private class EventSuppressor : IDisposable
+        {
+            private DrawingCanvas _canvas;
+            private bool _disposed = false;
+
+            public EventSuppressor(DrawingCanvas canvas)
+            {
+                _canvas = canvas;
+                _canvas._isSuppressing = true;
+            }
+
+            public void Dispose()
+            {
+                if (_disposed) return;
+                _disposed = true;
+                _canvas._isSuppressing = false;
+                if (_canvas._suppressedChanges.Count > 0)
+                {
+                    BatchChangeSet batch = new BatchChangeSet();
+                    batch.Changes = new List<ChangeSet>(_canvas._suppressedChanges);
+                    _canvas._suppressedChanges.Clear();
+                    if (_canvas.BatchChanged != null)
+                        _canvas.BatchChanged(_canvas, batch);
+                }
+            }
+        }
+
+        private class ExternalChangeScope : IDisposable
+        {
+            private DrawingCanvas _canvas;
+            private bool _disposed = false;
+
+            public ExternalChangeScope(DrawingCanvas canvas)
+            {
+                _canvas = canvas;
+                _canvas._isApplyingExternalChange = true;
+            }
+
+            public void Dispose()
+            {
+                if (_disposed) return;
+                _disposed = true;
+                _canvas._isApplyingExternalChange = false;
+            }
+        }
+
         /// <summary>触发 ShapeAdded 事件</summary>
         protected virtual void OnShapeAdded(ShapeBase shape)
         {
+            TrackShapeEvents(shape);
+            // 现有 ShapeAdded 事件触发保留
             if (ShapeAdded != null)
                 ShapeAdded(this, new ShapeEventArgs(shape));
+            ChangeSet cs = new ChangeSet();
+            cs.Kind = ChangeKind.ShapeAdded;
+            cs.ShapeId = shape.Id;
+            cs.Timestamp = DateTime.Now;
+            DispatchChange(cs);
         }
 
         /// <summary>触发 ShapeDeleted 事件</summary>
         protected virtual void OnShapeDeleted(ShapeBase shape)
         {
+            UntrackShapeEvents(shape);
+            ChangeSet cs = new ChangeSet();
+            cs.Kind = ChangeKind.ShapeRemoved;
+            cs.ShapeId = shape.Id;
+            cs.Timestamp = DateTime.Now;
+            DispatchChange(cs);
             if (ShapeDeleted != null)
                 ShapeDeleted(this, new ShapeEventArgs(shape));
         }
@@ -162,6 +332,11 @@ namespace DiagramDesigner.Controls
         {
             if (ConnectionAdded != null)
                 ConnectionAdded(this, new ConnectionEventArgs(conn));
+            ChangeSet cs = new ChangeSet();
+            cs.Kind = ChangeKind.ConnectionAdded;
+            cs.ShapeId = conn.Id;
+            cs.Timestamp = DateTime.Now;
+            DispatchChange(cs);
         }
 
         /// <summary>触发 ConnectionDeleted 事件</summary>
@@ -169,6 +344,11 @@ namespace DiagramDesigner.Controls
         {
             if (ConnectionDeleted != null)
                 ConnectionDeleted(this, new ConnectionEventArgs(conn));
+            ChangeSet cs = new ChangeSet();
+            cs.Kind = ChangeKind.ConnectionRemoved;
+            cs.ShapeId = conn.Id;
+            cs.Timestamp = DateTime.Now;
+            DispatchChange(cs);
         }
 
         /// <summary>
@@ -486,7 +666,7 @@ namespace DiagramDesigner.Controls
                 }
 
                 _resizeShape.Bounds = new RectangleF(newX, newY, newW, newH);
-                OnDocumentModified();
+                // 拖动中不发 DocumentModified，松开鼠标时统一触发
                 Invalidate();
             }
             else if (_isDragging && _draggingShapes.Count > 0)
@@ -511,7 +691,7 @@ namespace DiagramDesigner.Controls
                     s.Y = newY;
                 }
 
-                OnDocumentModified();
+                // 拖动中不发 DocumentModified，松开鼠标时统一触发
                 Invalidate();
             }
             else if (_isConnecting)
@@ -600,6 +780,13 @@ namespace DiagramDesigner.Controls
                 _isResizing = false;
                 _resizeHandle = ResizeHandle.None;
                 _resizeShape = null;
+                // 拖动结束后统一触发文档修改通知
+                OnDocumentModified();
+                ChangeSet commit = new ChangeSet();
+                commit.Kind = ChangeKind.DocumentCommitted;
+                commit.ShapeId = Guid.Empty;
+                commit.Timestamp = DateTime.Now;
+                DispatchChange(commit);
                 Invalidate();
             }
 
@@ -610,6 +797,13 @@ namespace DiagramDesigner.Controls
                 UpdateContainerMembership(_draggingShapes);
                 _draggingShapes.Clear();
                 _dragOriginalPositions = null;
+                // 拖动结束后统一触发文档修改通知
+                OnDocumentModified();
+                ChangeSet commit = new ChangeSet();
+                commit.Kind = ChangeKind.DocumentCommitted;
+                commit.ShapeId = Guid.Empty;
+                commit.Timestamp = DateTime.Now;
+                DispatchChange(commit);
                 Invalidate();
             }
 
@@ -791,6 +985,11 @@ namespace DiagramDesigner.Controls
                 _inlineEditingMemberIndex = -1;
 
                 OnDocumentModified();
+                ChangeSet commit = new ChangeSet();
+                commit.Kind = ChangeKind.DocumentCommitted;
+                commit.ShapeId = Guid.Empty;
+                commit.Timestamp = DateTime.Now;
+                DispatchChange(commit);
                 Invalidate();
             }
             finally
