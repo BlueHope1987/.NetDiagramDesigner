@@ -11,6 +11,71 @@ namespace DiagramDesigner.Controls
 {
     public partial class DrawingCanvas : Control
     {
+        // === 背景渲染缓存 ===
+        // 将多层渐变背景预渲染到 Bitmap，仅在尺寸/主题色变化时重生成，
+        // 避免每次 OnPaint 都创建多个渐变 Brush/Path 造成性能开销。
+        private Bitmap _backgroundCache = null;
+        private int _cachedBgWidth = 0;
+        private int _cachedBgHeight = 0;
+        private Color _cachedBgColor = Color.Empty;
+        private Color _cachedCenterColor = Color.Empty;
+
+        // === 连线渲染索引 ===
+        // 每帧构建一次：将连线按"所属容器"分组，避免每个容器都遍历全部连线（O(C×N)）。
+        private Dictionary<ShapeBase, List<Connection>> _containerConnectionIndex =
+            new Dictionary<ShapeBase, List<Connection>>();
+        private List<Connection> _nonContainerConnections = new List<Connection>();
+
+        /// <summary>
+        /// 重建连线索引。每帧 OnPaint 开始时调用一次，O(N) 遍历全部连线，
+        /// 按 FromShape.Parent 分组到容器索引或非容器列表。
+        /// </summary>
+        private void RebuildConnectionIndex()
+        {
+            _containerConnectionIndex.Clear();
+            _nonContainerConnections.Clear();
+
+            List<Connection> connections = _document.Connections;
+            for (int i = 0; i < connections.Count; i++)
+            {
+                Connection conn = connections[i];
+                ShapeBase from = conn.FromShape;
+                ShapeBase to = conn.ToShape;
+
+                if (from != null && to != null &&
+                    from.Parent != null && from.Parent == to.Parent)
+                {
+                    // 两端在同一容器内：归入该容器的连线列表
+                    List<Connection> bucket;
+                    if (!_containerConnectionIndex.TryGetValue(from.Parent, out bucket))
+                    {
+                        bucket = new List<Connection>();
+                        _containerConnectionIndex[from.Parent] = bucket;
+                    }
+                    bucket.Add(conn);
+                }
+                else
+                {
+                    // 跨容器或一端为空：归入非容器连线
+                    _nonContainerConnections.Add(conn);
+                }
+            }
+        }
+
+        /// <summary>使背景缓存失效，下次绘制时重新生成。</summary>
+        private void InvalidateBackgroundCache()
+        {
+            if (_backgroundCache != null)
+            {
+                _backgroundCache.Dispose();
+                _backgroundCache = null;
+            }
+            _cachedBgWidth = 0;
+            _cachedBgHeight = 0;
+            _cachedBgColor = Color.Empty;
+            _cachedCenterColor = Color.Empty;
+        }
+
         protected override void OnPaintBackground(PaintEventArgs pevent)
         {
             DrawFixedBackground(pevent.Graphics);
@@ -27,6 +92,9 @@ namespace DiagramDesigner.Controls
                 g.SmoothingMode = SmoothingMode.AntiAlias;
                 g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
             }
+
+            // 每帧构建一次连线索引，供 DrawConnections / DrawConnectionsForContainer 复用
+            RebuildConnectionIndex();
 
             g.TranslateTransform(_offset.X, _offset.Y);
             g.ScaleTransform(_zoom, _zoom);
@@ -50,6 +118,39 @@ namespace DiagramDesigner.Controls
             if (w <= 0 || h <= 0)
                 return;
 
+            // 缓存命中：尺寸与颜色均未变化时直接绘制缓存 Bitmap
+            if (_backgroundCache != null &&
+                _cachedBgWidth == w && _cachedBgHeight == h &&
+                _cachedBgColor == bgColor && _cachedCenterColor == centerColor)
+            {
+                g.DrawImageUnscaled(_backgroundCache, 0, 0);
+                return;
+            }
+
+            // 缓存失效：释放旧缓存，渲染到新 Bitmap
+            if (_backgroundCache != null)
+            {
+                _backgroundCache.Dispose();
+                _backgroundCache = null;
+            }
+
+            _backgroundCache = new Bitmap(w, h);
+            using (Graphics bg = Graphics.FromImage(_backgroundCache))
+            {
+                RenderBackgroundToGraphics(bg, w, h, bgColor, centerColor);
+            }
+
+            _cachedBgWidth = w;
+            _cachedBgHeight = h;
+            _cachedBgColor = bgColor;
+            _cachedCenterColor = centerColor;
+
+            g.DrawImageUnscaled(_backgroundCache, 0, 0);
+        }
+
+        /// <summary>将多层渐变背景渲染到指定 Graphics（原 DrawFixedBackground 的绘制逻辑）。</summary>
+        private static void RenderBackgroundToGraphics(Graphics g, int w, int h, Color bgColor, Color centerColor)
+        {
             // 底层纯色填充
             using (SolidBrush bgBrush = new SolidBrush(bgColor))
             {
@@ -57,7 +158,6 @@ namespace DiagramDesigner.Controls
             }
 
             // 放射渐变模拟：从右下角到左上角
-            // 用两个线性渐变交叉叠加，再用中心椭圆柔化
             // 渐变1：水平方向（右侧亮→左侧暗）
             using (LinearGradientBrush hBrush = new LinearGradientBrush(
                 new PointF(w, 0), new PointF(0, 0),
@@ -68,27 +168,16 @@ namespace DiagramDesigner.Controls
             }
 
             // 渐变2：垂直方向（下方亮→上方暗），半透明叠加
-            using (LinearGradientBrush vBrush = new LinearGradientBrush(
+            Color transCenter = Color.FromArgb(100,
+                Math.Min(255, centerColor.R + 20),
+                Math.Min(255, centerColor.G + 20),
+                Math.Min(255, centerColor.B + 25));
+            Color transBg = Color.FromArgb(0, bgColor);
+            using (LinearGradientBrush vBrush2 = new LinearGradientBrush(
                 new PointF(0, h), new PointF(0, 0),
-                centerColor, bgColor))
+                transCenter, transBg))
             {
-                using (SolidBrush overlay = new SolidBrush(Color.FromArgb(80,
-                    centerColor.R, centerColor.G, centerColor.B)))
-                {
-                    // 将垂直渐变与半透明色混合
-                    // 这里改用直接绘制带透明度的渐变矩形
-                    Color transCenter = Color.FromArgb(100,
-                        Math.Min(255, centerColor.R + 20),
-                        Math.Min(255, centerColor.G + 20),
-                        Math.Min(255, centerColor.B + 25));
-                    Color transBg = Color.FromArgb(0, bgColor);
-                    using (LinearGradientBrush vBrush2 = new LinearGradientBrush(
-                        new PointF(0, h), new PointF(0, 0),
-                        transCenter, transBg))
-                    {
-                        g.FillRectangle(vBrush2, 0, 0, w, h);
-                    }
-                }
+                g.FillRectangle(vBrush2, 0, 0, w, h);
             }
 
             // 中心高光椭圆柔化（在右下角）
@@ -173,38 +262,28 @@ namespace DiagramDesigner.Controls
 
         private void DrawConnections(Graphics g)
         {
-            List<Connection> connections = _document.Connections;
+            // 仅绘制非容器内连线（跨容器或一端为空的连线）
+            List<Connection> connections = _nonContainerConnections;
             for (int i = 0; i < connections.Count; i++)
             {
-                Connection conn = connections[i];
-                bool bothInSameContainer = false;
-                if (conn.FromShape != null && conn.ToShape != null &&
-                    conn.FromShape.Parent != null && conn.FromShape.Parent == conn.ToShape.Parent)
-                {
-                    bothInSameContainer = true;
-                }
-                if (!bothInSameContainer)
-                {
-                    conn.Draw(g, _zoom);
-                }
+                connections[i].Draw(g, _zoom);
             }
         }
 
         private void DrawConnectionsForContainer(Graphics g, ShapeBase parentShape, RectangleF clipRect)
         {
-            List<Connection> connections = _document.Connections;
-            for (int i = 0; i < connections.Count; i++)
+            // 直接从预构建的容器连线索引取该容器的连线列表，O(k) 而非 O(N)
+            List<Connection> bucket;
+            if (!_containerConnectionIndex.TryGetValue(parentShape, out bucket))
+                return;
+
+            GraphicsState state = g.Save();
+            g.Clip = new Region(clipRect);
+            for (int i = 0; i < bucket.Count; i++)
             {
-                Connection conn = connections[i];
-                if (conn.FromShape != null && conn.ToShape != null &&
-                    conn.FromShape.Parent == parentShape && conn.ToShape.Parent == parentShape)
-                {
-                    GraphicsState state = g.Save();
-                    g.Clip = new Region(clipRect);
-                    conn.Draw(g, _zoom);
-                    g.Restore(state);
-                }
+                bucket[i].Draw(g, _zoom);
             }
+            g.Restore(state);
         }
 
         private void DrawRubberBand(Graphics g)

@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="2.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{D3E4F5A6-B7C8-9012-CDEF-234567890ABC}</ProjectGuid>
+    <OutputType>WinExe</OutputType>
+    <AppDesignerFolder>Properties</AppDesignerFolder>
+    <RootNamespace>NativeManagerDemo</RootNamespace>
+    <AssemblyName>NativeManagerDemo</AssemblyName>
+    <TargetFrameworkVersion>v2.0</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Xml" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="ITopologyHost.cs" />
+    <Compile Include="EditorTopologyHost.cs" />
+    <Compile Include="CommandProcessor.cs" />
+    <Compile Include="CommandLineTokenizer.cs" />
+    <Compile Include="ExternalCommand.cs" />
+    <Compile Include="ProcessRunner.cs" />
+    <Compile Include="ToolchainDetector.cs" />
+    <Compile Include="CommandPolicy.cs" />
+    <Compile Include="CommandCoordinator.cs" />
+    <Compile Include="CommandConsoleControl.cs" />
+    <Compile Include="MiniJson.cs" />
+    <Compile Include="DesignTopologyStore.cs" />
+    <Compile Include="KubectlTopologyGateway.cs" />
+    <Compile Include="TopologyLayoutStore.cs" />
+    <Compile Include="MmcActionsPane.cs" />
+    <Compile Include="K8sShapes.cs" />
+    <Compile Include="ResourceVisualPalette.cs" />
+    <Compile Include="TopologyLegendControl.cs" />
+    <Compile Include="VerbMatrix.cs" />
+    <Compile Include="TopologyLayout.cs" />
+    <Compile Include="TopologyProjector.cs" />
+    <Compile Include="CanvasIntentController.cs" />
+    <Compile Include="ConsoleShellForm.cs" />
+    <Compile Include="SelfTest.cs" />
+    <Compile Include="Contract\DomainModel.cs" />
+    <Compile Include="Contract\IClusterGateway.cs" />
+    <Compile Include="Contract\ITopologyView.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\DiagramDesigner\DiagramDesigner.csproj">
+      <Project>{B1C2D3E4-F5A6-7890-ABCD-EF1234567890}</Project>
+      <Name>DiagramDesigner</Name>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
+</Project>

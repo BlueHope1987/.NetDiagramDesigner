@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 
 namespace DiagramDesigner.Core
 {
@@ -26,8 +27,17 @@ namespace DiagramDesigner.Core
 
         public void Unregister(string name)
         {
-            if (_types.ContainsKey(name))
+            ShapeType st;
+            if (_types.TryGetValue(name, out st))
+            {
+                // 注销时释放类型缓存的图标
+                if (st.Icon != null)
+                {
+                    st.Icon.Dispose();
+                    st.Icon = null;
+                }
                 _types.Remove(name);
+            }
         }
 
         public ShapeType GetShapeType(string name)
@@ -66,6 +76,15 @@ namespace DiagramDesigner.Core
 
         public void Clear()
         {
+            // 清空时释放所有类型缓存的图标
+            foreach (ShapeType st in _types.Values)
+            {
+                if (st.Icon != null)
+                {
+                    st.Icon.Dispose();
+                    st.Icon = null;
+                }
+            }
             _types.Clear();
         }
 

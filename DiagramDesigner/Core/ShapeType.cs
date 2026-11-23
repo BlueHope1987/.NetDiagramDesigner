@@ -25,6 +25,8 @@ namespace DiagramDesigner.Core
         private string _category = "基本图形";
         private string _description = "";
         private string _iconName = "";
+        [NonSerialized]
+        private Bitmap _icon = null;
         private List<RenderCommand> _renderCommands = new List<RenderCommand>();
         private bool _isContainer = false;
         private bool _supportsMembers = false;
@@ -64,6 +66,23 @@ namespace DiagramDesigner.Core
         {
             get { return _iconName; }
             set { _iconName = value; }
+        }
+
+        /// <summary>
+        /// 工具箱图标缓存（运行时，不参与序列化）。
+        /// 由工具箱首次访问时生成并存入，后续 ReloadFromRegistry 直接复用，
+        /// 避免每次都重新绘制所有图标。
+        /// </summary>
+        [System.ComponentModel.Browsable(false)]
+        public Bitmap Icon
+        {
+            get { return _icon; }
+            set
+            {
+                if (_icon != null && _icon != value)
+                    _icon.Dispose();
+                _icon = value;
+            }
         }
 
         public List<RenderCommand> RenderCommands

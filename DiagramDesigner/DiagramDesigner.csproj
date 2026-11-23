@@ -57,6 +57,8 @@
     <Compile Include="Core\CurveAwareMerge.cs" />
     <Compile Include="Core\RegionOutlineTracer.cs" />
     <Compile Include="Core\EditorEvents.cs" />
+    <Compile Include="Core\SpatialGrid.cs" />
+    <Compile Include="Core\ChangeHistory.cs" />
     <Compile Include="Core\ChangeSet.cs" />
     <Compile Include="Core\ZoneIntersectionHelper.cs" />
     <Compile Include="Config\GlobalConfig.cs" />
@@ -66,6 +68,7 @@
     <Compile Include="Controls\ShapeActionEditDialog.cs" />
     <Compile Include="Controls\DrawingCanvas.cs" />
     <Compile Include="Controls\DrawingCanvas.Rendering.cs" />
+    <Compile Include="Controls\DrawingCanvas.Interaction.cs" />
     <Compile Include="Controls\DiagramEditor.cs" />
     <Compile Include="Controls\DiagramEditor.Commands.cs" />
     <Compile Include="Shapes\GenericShape.cs" />

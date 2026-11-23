@@ -16,6 +16,18 @@ namespace DiagramDesigner.Controls
         private Bitmap _icon;
         private CreateShapeHandler _createShape;
         private bool _visible = true;
+        private bool _ownsIcon = false;
+
+        /// <summary>
+        /// 该 ToolboxItem 是否拥有图标的所有权。
+        /// true：图标由本项创建，清除时需释放（如自定义项）。
+        /// false：图标来自 ShapeType 缓存，由 ShapeType 管理生命周期，不释放。
+        /// </summary>
+        public bool OwnsIcon
+        {
+            get { return _ownsIcon; }
+            set { _ownsIcon = value; }
+        }
 
         public string Name
         {
@@ -85,6 +97,22 @@ namespace DiagramDesigner.Controls
             BuildContextMenu();
         }
 
+        /// <summary>
+        /// 释放所有"拥有所有权"的工具箱项图标（如自定义项），
+        /// 来自 ShapeType 缓存的共享图标不释放（由 ShapeType 管理）。
+        /// </summary>
+        private void DisposeAllItemIcons()
+        {
+            foreach (ToolboxItem item in _items)
+            {
+                if (item.OwnsIcon && item.Icon != null)
+                {
+                    item.Icon.Dispose();
+                    item.Icon = null;
+                }
+            }
+        }
+
         private void BuildContextMenu()
         {
             _contextMenu = new ContextMenuStrip();
@@ -106,6 +134,8 @@ namespace DiagramDesigner.Controls
             if (_visibilityFilterApplied)
                 prevVisible = GetVisibleNames();
 
+            // 先释放旧图标，再清空列表，避免 GDI 句柄泄漏
+            DisposeAllItemIcons();
             _items.Clear();
             _selectedItem = null;
 
@@ -119,7 +149,11 @@ namespace DiagramDesigner.Controls
                     item.Name = type.Name;
                     item.Category = type.Category;
                     item.CreateShape = new CreateShapeHandler(type.CreateInstance);
-                    item.Icon = CreateIconFromType(type);
+                    // 优先使用 ShapeType 缓存的图标；首次访问时生成并存入缓存
+                    if (type.Icon == null)
+                        type.Icon = CreateIconFromType(type);
+                    item.Icon = type.Icon;
+                    item.OwnsIcon = false; // 图标由 ShapeType 管理，不拥有所有权
                     _items.Add(item);
                 }
             }
@@ -199,12 +233,14 @@ namespace DiagramDesigner.Controls
                 return;
             if (item.Icon == null)
                 item.Icon = CreateDefaultIcon(item);
+            item.OwnsIcon = true; // 编程方式添加的项拥有图标所有权
             _items.Add(item);
             Invalidate();
         }
 
         public void ClearItems()
         {
+            DisposeAllItemIcons();
             _items.Clear();
             _selectedItem = null;
             Invalidate();
@@ -379,6 +415,12 @@ namespace DiagramDesigner.Controls
                 {
                     ShapeTypeRegistry.Instance.Unregister(_contextTarget.Name);
                 }
+                // 仅释放拥有所有权的图标（自定义项），注册表项的共享图标由 ShapeType 管理
+                if (_contextTarget.OwnsIcon && _contextTarget.Icon != null)
+                {
+                    _contextTarget.Icon.Dispose();
+                    _contextTarget.Icon = null;
+                }
                 _items.Remove(_contextTarget);
                 if (_selectedItem == _contextTarget)
                     _selectedItem = null;
@@ -397,12 +439,35 @@ namespace DiagramDesigner.Controls
             {
                 if (dlg.ShowDialog() == DialogResult.OK)
                 {
+                    // 仅释放不再保留的、拥有所有权的项的图标
+                    List<ToolboxItem> keepItems = dlg.ResultItems;
+                    foreach (ToolboxItem old in _items)
+                    {
+                        if (!keepItems.Contains(old) && old.OwnsIcon && old.Icon != null)
+                        {
+                            old.Icon.Dispose();
+                            old.Icon = null;
+                        }
+                    }
                     _items.Clear();
                     foreach (ToolboxItem item in dlg.ResultItems)
                     {
-                        // 为新增项生成图标
-                        if (item.Icon == null)
-                            item.Icon = CreateDefaultIcon(item);
+                        ShapeType st = ShapeTypeRegistry.Instance.GetShapeType(item.Name);
+                        if (st != null)
+                        {
+                            // 注册表项：使用类型缓存图标，不拥有所有权
+                            if (st.Icon == null)
+                                st.Icon = CreateIconFromType(st);
+                            item.Icon = st.Icon;
+                            item.OwnsIcon = false;
+                        }
+                        else
+                        {
+                            // 自定义项：拥有图标所有权
+                            if (item.Icon == null)
+                                item.Icon = CreateDefaultIcon(item);
+                            item.OwnsIcon = true;
+                        }
                         _items.Add(item);
                     }
                     if (!_items.Contains(_selectedItem))
@@ -494,6 +559,21 @@ namespace DiagramDesigner.Controls
                 g.FillRectangle(brush, rect);
                 g.DrawRectangle(pen, rect);
             }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                // 控件销毁时释放所有图标 Bitmap，防止 GDI 句柄泄漏
+                DisposeAllItemIcons();
+                if (_contextMenu != null)
+                {
+                    _contextMenu.Dispose();
+                    _contextMenu = null;
+                }
+            }
+            base.Dispose(disposing);
         }
     }
 }

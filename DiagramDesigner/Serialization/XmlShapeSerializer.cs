@@ -222,26 +222,24 @@ namespace DiagramDesigner.Serialization
             data.Config = document.Config;
 
             Dictionary<ShapeBase, string> idMap = new Dictionary<ShapeBase, string>();
+            // 反向索引：id → ShapeData，避免 O(n²) 嵌套循环
+            Dictionary<string, ShapeData> sdMap = new Dictionary<string, ShapeData>();
 
             foreach (ShapeBase shape in document.Shapes)
             {
                 ShapeData sd = ConvertShapeToData(shape);
                 idMap[shape] = sd.Id;
+                sdMap[sd.Id] = sd;
                 data.Shapes.Add(sd);
             }
 
-            foreach (ShapeData sd in data.Shapes)
+            // O(n): 单次遍历所有图形，通过 idMap 和 sdMap 直接设置 ParentId
+            foreach (ShapeBase shape in document.Shapes)
             {
-                foreach (ShapeBase shape in document.Shapes)
+                if (shape.Parent != null && idMap.ContainsKey(shape.Parent))
                 {
-                    if (idMap[shape] == sd.Id)
-                    {
-                        if (shape.Parent != null && idMap.ContainsKey(shape.Parent))
-                        {
-                            sd.ParentId = idMap[shape.Parent];
-                        }
-                        break;
-                    }
+                    ShapeData sd = sdMap[idMap[shape]];
+                    sd.ParentId = idMap[shape.Parent];
                 }
             }
 

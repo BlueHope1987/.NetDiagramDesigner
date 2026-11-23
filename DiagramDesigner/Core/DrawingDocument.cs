@@ -13,6 +13,12 @@ namespace DiagramDesigner.Core
         private SizeF _pageSize = new SizeF(2000, 1500);
         private CanvasConfig _config = new CanvasConfig();
 
+        // 空间索引：加速 Shape 命中测试，结构变化或 Shape 位置变化时需重建
+        [NonSerialized]
+        private SpatialGrid _shapeGrid = new SpatialGrid();
+        [NonSerialized]
+        private bool _gridDirty = true;
+
         public string Name
         {
             get { return _name; }
@@ -44,6 +50,7 @@ namespace DiagramDesigner.Core
                 return;
             _shapes.Add(shape);
             shape.ZOrder = _shapes.Count;
+            _gridDirty = true;
             OnDocumentChanged(EventArgs.Empty);
         }
 
@@ -78,6 +85,7 @@ namespace DiagramDesigner.Core
             }
 
             _shapes.Remove(shape);
+            _gridDirty = true;
             OnDocumentChanged(EventArgs.Empty);
         }
 
@@ -170,18 +178,47 @@ namespace DiagramDesigner.Core
             }
         }
 
+        /// <summary>确保空间索引为最新状态（反序列化后首次访问会自动重建）。</summary>
+        private void EnsureGrid()
+        {
+            if (_shapeGrid == null)
+                _shapeGrid = new SpatialGrid();
+            if (_gridDirty || _shapeGrid.IsDirty)
+            {
+                _shapeGrid.Rebuild(_shapes);
+                _gridDirty = false;
+            }
+        }
+
+        /// <summary>
+        /// 强制重建空间索引。当 Shape 位置发生外部变化（如拖动、缩放结束）后调用，
+        /// 以保证命中测试返回正确结果。
+        /// </summary>
+        public void Reindex()
+        {
+            _gridDirty = true;
+            EnsureGrid();
+        }
+
         public ShapeBase HitTestShape(PointF pt)
         {
-            for (int i = _shapes.Count - 1; i >= 0; i--)
+            EnsureGrid();
+            // 按 ZOrder 倒序遍历命中单元格内的 Shape（后绘制的在上层）
+            List<ShapeBase> candidates = _shapeGrid.Query(pt);
+            if (candidates != null)
             {
-                if (_shapes[i].HitTest(pt))
-                    return _shapes[i];
+                for (int i = candidates.Count - 1; i >= 0; i--)
+                {
+                    if (candidates[i].HitTest(pt))
+                        return candidates[i];
+                }
             }
             return null;
         }
 
         public Connection HitTestConnection(PointF pt, float tolerance)
         {
+            // 连线数量通常远少于 Shape，保持线性扫描
             foreach (Connection conn in _connections)
             {
                 if (conn.HitTest(pt, tolerance))
@@ -192,8 +229,10 @@ namespace DiagramDesigner.Core
 
         public List<ShapeBase> GetShapesInRect(RectangleF rect)
         {
+            EnsureGrid();
+            List<ShapeBase> candidates = _shapeGrid.Query(rect);
             List<ShapeBase> result = new List<ShapeBase>();
-            foreach (ShapeBase s in _shapes)
+            foreach (ShapeBase s in candidates)
             {
                 if (s.HitTest(rect))
                     result.Add(s);
@@ -205,6 +244,7 @@ namespace DiagramDesigner.Core
         {
             _shapes.Clear();
             _connections.Clear();
+            _gridDirty = true;
             OnDocumentChanged(EventArgs.Empty);
         }
 
